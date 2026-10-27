@@ -568,6 +568,11 @@ impl Mesh {
 
     /// The asynchronous channel: email the fleet's own agent address. Used when
     /// a peer is unreachable or when an answer is not needed now.
+    ///
+    /// The sender is the fleet's existing `send_message` tool, whose interface is
+    /// a CHANNEL positional plus `--text`, not a `--body` flag. Getting that
+    /// wrong is silent: the tool exits non-zero with a usage message, which
+    /// reads as a delivery failure rather than as a wrong invocation.
     pub fn email(&self, to: &str, subject: &str, body: &str) -> Result<String> {
         let sender = crate::runner::which("send_message")
             .map(|p| p.to_string_lossy().to_string())
@@ -576,11 +581,12 @@ impl Mesh {
             bail!("no sender installed (looked for `send_message` and {sender})");
         }
         let args = vec![
+            "email".to_string(),
             "--to".to_string(),
             to.to_string(),
             "--subject".to_string(),
             subject.to_string(),
-            "--body".to_string(),
+            "--text".to_string(),
             body.to_string(),
         ];
         let c = crate::runner::run_capture(&sender, &args, &[], None, Duration::from_secs(60))?;
