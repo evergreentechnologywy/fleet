@@ -12,6 +12,7 @@
 //! line at the prompt, and terminates the run while one is in flight.
 
 use anyhow::Result;
+#[cfg(unix)]
 use std::io::Read;
 
 use crate::TuiArgs;
@@ -152,15 +153,21 @@ impl Drop for Raw {
 }
 
 /// What the user did with a line.
+///
+/// `Interrupted` is Unix-only: on Windows there is no raw mode, so Ctrl-C is
+/// delivered by the console to the whole process group rather than read as a byte
+/// and there is no line to abandon.
 enum Edit {
     Line(String),
     Eof,
+    #[cfg(unix)]
     Interrupted,
 }
 
 /// Read one line with editing. Falls back to a plain read when stdin is not a
 /// terminal, so `echo "task" | fleet tui` and a cron-driven REPL both work.
 fn read_line(prompt: &str, history: &[String]) -> Result<Edit> {
+    #[cfg(unix)]
     use std::io::Write;
     #[cfg(unix)]
     {
@@ -338,6 +345,10 @@ fn read_line(prompt: &str, history: &[String]) -> Result<Edit> {
             }
         }
     }
+    // Windows: no raw mode. The Windows console does its own line editing, so
+    // reading a cooked line is not a degraded fallback here — it is the correct
+    // implementation. The REPL still works; history recall and Ctrl-A/E are the
+    // console's, not ours.
     #[cfg(not(unix))]
     {
         let _ = history;
@@ -570,6 +581,7 @@ pub fn tui(a: TuiArgs, _json: bool) -> Result<()> {
                 println!("bye.");
                 return Ok(());
             }
+            #[cfg(unix)]
             Edit::Interrupted => continue,
             Edit::Line(line) => {
                 let line = line.trim().to_string();
