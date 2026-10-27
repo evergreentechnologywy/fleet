@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fleet — a harness for harnesses</title>
+<meta name="description" content="One orchestrator over many agent CLIs. Each call picks its own harness and model. Open source, MIT.">
+<meta property="og:title" content="fleet — a harness for harnesses">
+<meta property="og:description" content="Route one task across omp, codex, claude, opencode and more — each choosing its own model per call.">
+<meta property="og:type" content="website">
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #12161b;
+    --line: #1e242c;
+    --fg: #e6edf3;
+    --dim: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --warn: #d29922;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: var(--mono); font-size: 14px; }
+  code { background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px; overflow-x: auto; line-height: 1.55;
+  }
+  pre code { background: none; border: none; padding: 0; }
+  header { border-bottom: 1px solid var(--line); padding: 20px 0; }
+  header .wrap { display: flex; align-items: center; gap: 16px; }
+  .logo { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+  .logo span { color: var(--accent); }
+  nav { margin-left: auto; display: flex; gap: 20px; font-size: 14px; }
+  nav a { color: var(--dim); }
+  nav a:hover { color: var(--fg); text-decoration: none; }
+  .hero { padding: 72px 0 48px; }
+  h1 { font-size: 44px; line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 18px; }
+  .sub { font-size: 19px; color: var(--dim); max-width: 640px; margin: 0 0 32px; }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 32px; }
+  .badge {
+    font-size: 12px; color: var(--dim); border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px 11px; font-family: var(--mono);
+  }
+  h2 { font-size: 26px; letter-spacing: -0.01em; margin: 56px 0 14px; }
+  h3 { font-size: 17px; margin: 28px 0 8px; }
+  p { margin: 0 0 14px; }
+  .lead { color: var(--dim); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin: 24px 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
+  .card h3 { margin-top: 0; }
+  .card p { margin: 0; color: var(--dim); font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; }
+  td code { font-size: 13px; }
+  .ok { color: var(--accent2); }
+  .no { color: var(--warn); }
+  footer { border-top: 1px solid var(--line); margin-top: 72px; padding: 32px 0 56px; color: var(--dim); font-size: 14px; }
+  .note { border-left: 3px solid var(--accent); padding-left: 14px; color: var(--dim); margin: 20px 0; }
+  .cta { display: inline-block; background: var(--accent); color: #06101c; font-weight: 600;
+         padding: 11px 22px; border-radius: 8px; margin-right: 10px; }
+  .cta:hover { text-decoration: none; opacity: .9; }
+  .cta.ghost { background: none; color: var(--fg); border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="logo">fleet<span>.</span></div>
+    <nav>
+      <a href="#why">Why</a>
+      <a href="#install">Install</a>
+      <a href="#harnesses">Harnesses</a>
+      <a href="#stack">Run it</a>
+      <a href="https://github.com/evergreentechnologywy/fleet">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section class="hero">
+    <h1>A harness for harnesses.</h1>
+    <p class="sub">
+      One orchestrator over many agent CLIs. A harness is a TOML file — add one by
+      writing it. Each call picks its own harness <em>and</em> model, so the model is a
+      per-call decision rather than a per-tool setting.
+    </p>
+    <div class="badges">
+      <span class="badge">MIT</span>
+      <span class="badge">single binary</span>
+      <span class="badge">Rust</span>
+      <span class="badge">no daemon required</span>
+      <span class="badge">hot-reloaded config</span>
+    </div>
+    <a class="cta" href="https://github.com/evergreentechnologywy/fleet">Read the source</a>
+    <a class="cta ghost" href="#install">Install in one line</a>
+  </section>
+
+  <h2 id="why">The problem it removes</h2>
+  <p class="lead">
+    You have several agent CLIs. They are good at different things. So you keep choosing
+    between them by hand, and you keep wiring each one to a model separately — which
+    means the same task gets a different answer depending on which tool you happened to
+    open, and nothing records which one was right.
+  </p>
+  <p>
+    <code>fleet</code> makes that one decision instead of two. You give it a task; it picks
+    the harness or harnesses, asks a <strong>chooser</strong> which model and effort to use
+    for that specific call, runs it, merges the answers, and remembers what happened.
+  </p>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Harnesses are files</h3>
+      <p>One <code>*.toml</code> in <code>$FLEET_HOME/harnesses</code>. Writing it registers it;
+      deleting it removes it. Neither needs a restart.</p>
+    </div>
+    <div class="card">
+      <h3>The model is a per-call decision</h3>
+      <p>Point it at Jev, any OpenAI-compatible endpoint, or nothing at all. A harness
+      declares what it can serve, and the router clamps the chooser to that.</p>
+    </div>
+    <div class="card">
+      <h3>Plugins apply to every harness</h3>
+      <p>Hooks live in the engine's call path, not in each CLI's config — so one plugin
+      works for a harness you add tomorrow.</p>
+    </div>
+    <div class="card">
+      <h3>Memory and transcripts are kept</h3>
+      <p>Every turn is journalled, so a crashed run is resumable and "last version wins"
+      is a query rather than a convention.</p>
+    </div>
+  </div>
+
+  <h2 id="install">Install</h2>
+  <p class="lead">Build it, or take the install script. It needs nothing but a shell.</p>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/evergreentechnologywy/fleet/main/install.sh | sh</code></pre>
+  <p>From source, which is the path that gives you the newest thing:</p>
+<pre><code>git clone https://github.com/evergreentechnologywy/fleet
+cd fleet
+cargo build --release
+install -m 0755 target/release/fleet /usr/local/bin/fleet</code></pre>
+  <p>Then answer two questions:</p>
+<pre><code>fleet onboard</code></pre>
+  <div class="note">
+    Onboarding detects what is already on the machine, imports the keys you already have,
+    and asks for nothing it can work out itself. A domain step is optional — the fleet
+    runs on a tailnet URL with no domain at all.
+  </div>
+
+  <h3>Say what you optimise for</h3>
+  <p>Your priority is a setting, not a rewrite:</p>
+<pre><code>fleet config priority cost       # cheapest acceptable model
+fleet config priority speed      # fastest first token
+fleet config priority quality    # most capable for the job
+fleet config priority cost --harness omp   # per-harness override</code></pre>
+
+  <h2 id="harnesses">What it can drive</h2>
+  <p class="lead">
+    These are real, and each carries the flags its CLI actually needs — the part that
+    takes an afternoon to get right per tool.
+  </p>
+  <table>
+    <thead><tr><th>harness</th><th>what it is</th><th>headless invocation</th></tr></thead>
+    <tbody>
+      <tr><td><code>omp</code></td><td>tools, PTY, skills, long autonomous runs</td><td><code>-p</code></td></tr>
+      <tr><td><code>claude</code></td><td>careful multi-file refactors and review</td><td><code>-p</code> via an Anthropic shim</td></tr>
+      <tr><td><code>codex</code></td><td>strong single-shot reasoning</td><td><code>exec</code></td></tr>
+      <tr><td><code>opencode</code></td><td>multi-provider, bulk edits</td><td><code>run</code></td></tr>
+      <tr><td><code>kimi</code></td><td>Kimi Code</td><td><code>--auto -p</code></td></tr>
+      <tr><td><code>grok</code></td><td>Grok Build</td><td><code>--print</code></td></tr>
+      <tr><td><code>qwen</code></td><td>bulk edits and rewrites</td><td><code>--auth-type openai -p</code></td></tr>
+      <tr><td><code>cline</code></td><td>autonomous, act/plan modes</td><td>positional</td></tr>
+      <tr><td><code>crush</code></td><td>LSP-aware terminal agent</td><td><code>run</code></td></tr>
+      <tr><td><code>commandcode</code></td><td>learns your codebase</td><td><code>-p --trust</code></td></tr>
+      <tr><td><code>zeroclaw</code></td><td>smallest agent runtime</td><td><code>agent -m</code></td></tr>
+      <tr><td><code>openclaw</code></td><td>multi-channel agent gateway</td><td><code>agent exec</code></td></tr>
+      <tr><td><code>freebuff</code></td><td>free coding agent</td><td>positional</td></tr>
+      <tr><td><code>pi</code></td><td>minimal, self-modifying</td><td><code>--print</code></td></tr>
+      <tr><td><em>any provider</em></td><td>OpenAI-compatible endpoint, no CLI</td><td>direct</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Adding one is writing a file. <code>fleet catalog list --present</code> shows what is
+    already on the machine that the fleet is not using yet.
+  </p>
+
+  <h3>Reliability, since one CLI always breaks</h3>
+  <p>
+    A failing harness walks a fallback chain, and the answer says which one actually
+    replied:
+  </p>
+<pre><code>$ fleet run "summarise this" -H gemini
+fleet: `gemini` is installed but not runnable — running `muse` instead
+[answered by muse after gemini failed]
+…</code></pre>
+  <p>
+    There is also a direct path that skips harnesses and the chooser entirely, so a broken
+    CLI cannot take the fleet down with it:
+  </p>
+<pre><code>fleet run "summarise this" --model deepseek-flash --provider deepseek</code></pre>
+
+  <h2 id="stack">Run it on</h2>
+  <p class="lead">
+    The fleet reaches a model through a harness, and a harness needs a machine. These are
+    the ones it has been tested against.
+  </p>
+
+  <h3>Machines</h3>
+  <table>
+    <thead><tr><th>provider</th><th>why</th><th>notes</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><a href="https://www.hostinger.com/vps-hosting">Hostinger</a></td>
+        <td>cheap VPS, and the fleet has a working API token for domains and DNS</td>
+        <td>renewal pricing after the first term is the usual trap</td>
+      </tr>
+      <tr>
+        <td><a href="https://www.maritime.sh">Maritime</a></td>
+        <td>Firecracker micro-VMs with a persistent disk and auto-sleep</td>
+        <td>the fleet drives them directly, including a <em>visible desktop</em></td>
+      </tr>
+      <tr>
+        <td><a href="https://www.cloudroom.dev/agents">Cloudroom</a></td>
+        <td>run agents in a cloud VM</td>
+        <td>local room CLI; no provisioning API at the documented URL</td>
+      </tr>
+      <tr>
+        <td><a href="https://www.digitalocean.com">DigitalOcean</a></td>
+        <td>the least surprising VPS</td>
+        <td>affiliate program pays cash, separate from account credit</td>
+      </tr>
+      <tr>
+        <td><a href="https://www.hetzner.com/cloud">Hetzner</a></td>
+        <td>best price per core in the EU</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td><a href="https://www.vultr.com">Vultr</a></td>
+        <td>wide region coverage</td>
+        <td>referral pays on users active 30+ days</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Inference</h3>
+  <table>
+    <thead><tr><th>provider</th><th>why</th><th>notes</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://openrouter.ai">OpenRouter</a></td><td>many models behind one key</td><td>startup program: up to $5K credits, 500+ models</td></tr>
+      <tr><td><a href="https://www.together.ai">Together</a></td><td>open models, own inference</td><td>startup accelerator: credits for accepted teams</td></tr>
+      <tr><td><a href="https://fireworks.ai">Fireworks</a></td><td>fast open-model serving</td><td>startup credits, 1-year validity</td></tr>
+      <tr><td><a href="https://groq.com">Groq</a></td><td>lowest latency</td><td>—</td></tr>
+      <tr><td><a href="https://platform.deepseek.com">DeepSeek</a></td><td>strong cheap models</td><td>prepaid balance; a zero balance reads as a failed call</td></tr>
+      <tr><td><a href="https://console.mistral.ai">Mistral</a></td><td>EU-hosted</td><td>—</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    None of the links above carry a referral code yet. If you are the person who owns this
+    site and you want them to, that is a one-line change per row — and the honest place to
+    disclose it is right here, not in a footnote.
+  </div>
+
+  <h3>Where it runs</h3>
+  <p>
+    Linux, macOS and Windows. The binary is one file with no runtime dependency; the
+    Windows build is cross-compiled and deployed to a real desk by a plugin deploy target,
+    which is also where most of the platform traps in the docs come from.
+  </p>
+<pre><code>fleet deploy --to fleetnode://&lt;host&gt;      # our own nodes
+fleet deploy --to ssh://root@host        # anything with a shell
+fleet deploy --to docker://context       # a container</code></pre>
+
+  <h2>Status, honestly</h2>
+  <p class="lead">
+    This is working software used daily, and it is early. The parts that are proven are
+    proven by running them, and the parts that are not are labelled as such rather than
+    described as done.
+  </p>
+  <div class="grid">
+    <div class="card">
+      <h3 class="ok">Proven</h3>
+      <p>Multi-harness routing, fallback chains, shared memory across nodes, deploy to
+      Linux and Windows, the catalog and doctor, visible desktops on cloud VMs.</p>
+    </div>
+    <div class="card">
+      <h3 class="no">Known gaps</h3>
+      <p>macOS is untested on real hardware. ACP-protocol agents need a client that speaks
+      the session handshake. Some harnesses need a paid account to be useful, and say so.</p>
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <strong>fleet</strong> — MIT licensed.
+      <a href="https://github.com/evergreentechnologywy/fleet">github.com/evergreentechnologywy/fleet</a>
+    </p>
+    <p>
+      Provider names and links are references, not endorsements. Prices and program terms
+      change; check them at the source before you spend anything.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

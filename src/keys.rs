@@ -279,14 +279,47 @@ pub fn import(names: &[String]) -> Result<Vec<String>> {
     let mut map = parse_env_file(&existing);
 
     // Resolve each name from the process environment first, then the files.
-    let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    //
+    // A name defined in MORE THAN ONE file is a conflict, and silently taking the
+    // first is how a mislabeled value wins: measured 2026-10-27, DEEPSEEK_API_KEY
+    // held a tokenbroker key (`tb_...`) in /opt/fleet/.env while the real DeepSeek
+    // key (`sk-...`) sat in /opt/fleet/secrets/netcup-hermes.env. The import took
+    // the wrong one and every DeepSeek call returned 401 while the key "existed".
+    //
+    // So: collect EVERY definition, and when a name is defined more than once,
+    // PREFER THE ONE THAT LOOKS RIGHT FOR THAT PROVIDER, and report the conflict
+    // rather than resolving it invisibly.
+    let mut sources: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for file in env_files() {
         if let Ok(text) = std::fs::read_to_string(&file) {
             for (k, v) in parse_env_file(&text) {
-                sources.entry(k).or_insert(v);
+                sources
+                    .entry(k)
+                    .or_default()
+                    .push((file.display().to_string(), v));
             }
         }
     }
+    // Collapse each name to one value, preferring a well-formed one.
+    let mut chosen: BTreeMap<String, String> = BTreeMap::new();
+    for (k, defs) in &sources {
+        if defs.len() > 1 {
+            eprintln!(
+                "fleet: `{k}` is defined in {} places; choosing the best-formed value",
+                defs.len()
+            );
+            for (where_, _) in defs {
+                eprintln!("        {where_}");
+            }
+        }
+        let best = defs
+            .iter()
+            .max_by_key(|(_, v)| key_shape_score(k, v))
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        chosen.insert(k.clone(), best);
+    }
+    let sources = chosen;
 
     let mut written = Vec::new();
     for name in names {
@@ -348,6 +381,61 @@ pub fn unexpected() -> Vec<Found> {
         .into_iter()
         .filter(|f| !known.contains(&f.name))
         .collect()
+}
+
+/// How plausible is this value for this variable name?
+///
+/// A cheap, honest heuristic: several providers prefix their keys, so a value
+/// carrying the WRONG provider's prefix is almost certainly mislabeled. Ranking
+/// by this is what lets `import` pick the real key when two files disagree,
+/// instead of trusting file order.
+pub fn key_shape_score(name: &str, value: &str) -> i32 {
+    let v = value.trim();
+    if v.is_empty() {
+        return -1000;
+    }
+    let lower = name.to_lowercase();
+
+    // (provider fragment in the NAME, the prefix a REAL key for it carries)
+    //
+    // These must be checked before any generic length rule, and they must
+    // DOMINATE it: the whole failure being fixed was a `tb_` tokenbroker key in
+    // DEEPSEEK_API_KEY, where both candidates were the same length, so a
+    // length-based tie-break picked the wrong one.
+    const SHAPES: [(&str, &str); 10] = [
+        ("deepseek", "sk-"),
+        ("openai", "sk-"),
+        ("anthropic", "sk-ant"),
+        ("openrouter", "sk-or-"),
+        ("groq", "gsk_"),
+        ("xai", "xai-"),
+        ("fireworks", "fw_"),
+        ("together", ""),
+        ("perplexity", "pplx-"),
+        ("cerebras", "csk-"),
+    ];
+    // Any provider key that is clearly NOT this provider's.
+    const FOREIGN: [&str; 5] = ["tb_", "mk_", "rmt_", "xoxb-", "ghp_"];
+
+    for (frag, prefix) in SHAPES {
+        if !lower.contains(frag) || prefix.is_empty() {
+            continue;
+        }
+        if v.starts_with(prefix) {
+            // A matching prefix is decisive, and beats every other candidate.
+            return 1000;
+        }
+        if FOREIGN.iter().any(|f| v.starts_with(f)) {
+            // Wrong provider's prefix: worse than anything else on offer.
+            return -1000;
+        }
+    }
+    // A token-broker key in a non-broker variable is wrong, whatever the name.
+    if FOREIGN.iter().any(|f| v.starts_with(f)) && !lower.contains("broker") {
+        return -500;
+    }
+    // Otherwise: a longer, structured value beats a short one.
+    (v.len().min(64) as i32) - 20
 }
 
 /// Read one key's value from the same places `scan` reads, for a caller that

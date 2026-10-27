@@ -511,6 +511,13 @@ struct OnboardArgs {
     /// Env var holding the provider key.
     #[arg(long)]
     key_env: Option<String>,
+    /// Point a domain at this node and serve the web app on it. Give the name
+    /// you want; `fleet domain check <name>` says what it costs first.
+    #[arg(long)]
+    domain: Option<String>,
+    /// Skip the domain step entirely (it is optional).
+    #[arg(long)]
+    no_domain: bool,
 }
 
 #[derive(Subcommand, Debug)]

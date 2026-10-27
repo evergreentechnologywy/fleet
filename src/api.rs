@@ -54,17 +54,56 @@ fn json_response(code: u16, body: serde_json::Value) -> Response<std::io::Cursor
 }
 
 /// Serve the API on `host:port` until the process is stopped.
+/// Serve on one or more addresses.
+///
+/// More than one is needed in practice, and the reason is a security one: a
+/// reverse proxy on the same host reaches the engine over LOOPBACK, while peers
+/// reach it over the TAILNET. Binding `0.0.0.0` would satisfy both and also
+/// expose the fleet's whole API to the internet (measured 2026-10-27: doing
+/// exactly that made `http://<public-ip>:8788/health` answer 200), so the engine
+/// takes a list instead and the caller names precisely the interfaces it wants.
+///
+/// `host` may be a comma-separated list: `--host 127.0.0.1,100.87.28.18`.
 pub fn serve(host: &str, port: u16) -> Result<()> {
     crate::paths::ensure_dirs()?;
     // A service started without an EnvironmentFile still needs its keys.
     crate::paths::load_env_file();
+    let registry = Registry::default_dir();
+
+    let hosts: Vec<String> = host
+        .split(',')
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .collect();
+    if hosts.len() == 1 {
+        return serve_one(&hosts[0], port, &registry);
+    }
+
+    // Several addresses: one accept loop each, so a busy tailnet request cannot
+    // starve the proxy's loopback one.
+    let mut handles = Vec::new();
+    for h in hosts {
+        let reg = Registry::new(registry.dir().to_path_buf());
+        let port = port;
+        handles.push(std::thread::spawn(move || {
+            if let Err(e) = serve_one(&h, port, &reg) {
+                eprintln!("fleet: listener {h}:{port} stopped: {e}");
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.join();
+    }
+    Ok(())
+}
+
+fn serve_one(host: &str, port: u16, registry: &Registry) -> Result<()> {
     let addr = format!("{host}:{port}");
     let server = Server::http(&addr).map_err(|e| anyhow::anyhow!("binding {addr}: {e}"))?;
     eprintln!(
         "fleet api listening on http://{addr}  (harness dir {})",
         crate::paths::harness_dir().display()
     );
-    let registry = Registry::default_dir();
 
     for mut request in server.incoming_requests() {
         let method = request.method().clone();

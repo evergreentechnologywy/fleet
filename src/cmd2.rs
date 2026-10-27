@@ -748,6 +748,55 @@ pub fn config(c: ConfigCmd, json: bool) -> Result<()> {
 
 // ---------------------------------------------------------------- onboard
 
+/// The optional domain step.
+///
+/// Optional because the fleet works on a tailnet URL with no domain at all, and
+/// because a domain costs money — so the step ASKS and then stops, rather than
+/// assuming. What it does is the part that is easy to get wrong by hand: it
+/// reports the cost, points the A record at this node, and issues the
+/// certificate, which is the three-step sequence that otherwise takes an hour.
+fn onboard_domain(name: &str, json: bool) -> Result<()> {
+    use fleet::domain;
+    let offer = domain::offer(name, None);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&offer)?);
+    } else {
+        println!();
+        println!("domain: {name}");
+        println!("  how:  {} via {}", offer.kind, offer.provider);
+        println!("  cost: {}", offer.cost);
+        if !offer.automated {
+            println!("  {}", offer.note);
+            println!();
+            println!("  This one needs a human step. To serve the web app on a name");
+            println!("  right now, use one you already own:");
+            println!("      fleet domain dns <your-zone>            # see its records");
+            println!("      fleet domain point <zone> app --content <this-host-ip>");
+            return Ok(());
+        }
+    }
+    if !offer.automated {
+        return Ok(());
+    }
+    // The node's own address is what the A record must carry.
+    let ip = std::env::var("FLEET_PUBLIC_IP").unwrap_or_default();
+    if ip.is_empty() {
+        println!();
+        println!("  set FLEET_PUBLIC_IP to this host's public address, then:");
+        println!("      fleet domain point <zone> @ --content $FLEET_PUBLIC_IP");
+        return Ok(());
+    }
+    let zone = name.split_once('.').map(|(_, z)| z).unwrap_or(name);
+    match domain::dns_create("hostinger", zone, "@", "A", &ip, 300) {
+        Ok(_) => println!("  A record set: {name} -> {ip}"),
+        Err(e) => println!("  could not set the record: {e}"),
+    }
+    println!();
+    println!("  next: certbot certonly --webroot -w /var/www/certbot -d {name}");
+    println!("  then: fleet webapp domain {name}");
+    Ok(())
+}
+
 pub fn onboard(a: OnboardArgs, json: bool) -> Result<()> {
     fleet::paths::ensure_dirs()?;
     let mut did: Vec<String> = Vec::new();
