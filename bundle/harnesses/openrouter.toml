@@ -1,3 +1,4 @@
+# DISABLED 2026-10-27: HTTP 402: Insufficient credits
 name = "openrouter"
 description = "OpenRouter: many models behind one key, the broadest fallback"
 kind = "openai-compat"
@@ -13,7 +14,7 @@ models = ["*"]
 tags = ["direct", "fallback", "provider"]
 priority = 30
 cost_hint = 0.02
-enabled = true
+enabled = false
 timeout_s = 600
 
 [http]

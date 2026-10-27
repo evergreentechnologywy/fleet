@@ -1,3 +1,6 @@
+# DISABLED 2026-10-27: `codex exec` starts, prints its banner and config, then
+# never returns a message — every run falls back to muse. It needs its own
+# investigation (prompt delivery vs appended flags) before it can be trusted.
 name = "codex"
 description = "Codex CLI: strong single-shot reasoning and review"
 kind = "cli"
@@ -18,5 +21,5 @@ effort = "high"
 tags = ["code", "review", "reason"]
 priority = 80
 cost_hint = 0.08
-enabled = true
+enabled = false
 timeout_s = 3600
