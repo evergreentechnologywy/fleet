@@ -148,6 +148,13 @@ fn check_catalog(r: &mut Report) {
     }
     for d in &found {
         let name = &d.entry.name;
+        // An entry marked `enabled = false` is deliberately NOT an install
+        // target here — a desk-only tool on a hub, or a retired one kept for
+        // reference. Reporting it as drift made the doctor cry wolf on every
+        // node that legitimately lacks it, which is how a doctor gets ignored.
+        if !d.entry.enabled {
+            continue;
+        }
         match (d.present, d.installed) {
             // Present but not wired: free capacity the planner cannot see.
             (true, false) if d.entry.kind != crate::catalog::Kind::Integration => {
