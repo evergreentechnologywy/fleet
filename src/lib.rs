@@ -20,6 +20,7 @@
 //! * [`selfmod`] — verifier-gated self-modification; the ledger is truth.
 //! * [`deploy`] — one line to a server.
 //! * [`api`] — the same engine over HTTP.
+//! * [`webapp`] — a single embedded page that drives that API.
 
 pub mod api;
 pub mod config;
@@ -38,6 +39,7 @@ pub mod router;
 pub mod runner;
 pub mod selfmod;
 pub mod templates;
+pub mod webapp;
 
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;

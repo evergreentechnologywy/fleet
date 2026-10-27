@@ -94,6 +94,20 @@ pub fn serve(host: &str, port: u16) -> Result<()> {
         }
         let q = Query::parse(&query);
         let result: Result<Response<std::io::Cursor<Vec<u8>>>> = (|| {
+            // The embedded app, before anything else: it is a GET on a path
+            // that no API route claims, so there is nothing to disambiguate.
+            if method == Method::Get {
+                if let Some((ctype, body)) = crate::webapp::route(&path) {
+                    let mut r = Response::from_string(body).with_status_code(200);
+                    for h in cors() {
+                        r = r.with_header(h);
+                    }
+                    r = r.with_header(
+                        Header::from_bytes(&b"Content-Type"[..], ctype.as_bytes()).unwrap(),
+                    );
+                    return Ok(r);
+                }
+            }
             match (&method, path.as_str()) {
                 (Method::Get, "/health") => {
                     let (all, errors) = registry.all();

@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>fleet — a harness for harnesses</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --fg: #e6e9ef;
+    --dim: #8b93a7; --accent: #6ea8fe; --ok: #4ade80; --bad: #f87171; --warn: #fbbf24;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: baseline; gap: 14px; padding: 18px 22px;
+           border-bottom: 1px solid var(--line); position: sticky; top: 0;
+           background: var(--bg); z-index: 5; }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  header .sub { color: var(--dim); font-size: 13px; }
+  header .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  nav { display: flex; gap: 2px; padding: 10px 22px 0; flex-wrap: wrap; }
+  nav button { background: none; border: 1px solid transparent; color: var(--dim);
+               padding: 7px 12px; border-radius: 8px 8px 0 0; cursor: pointer;
+               font-size: 14px; }
+  nav button:hover { color: var(--fg); }
+  nav button[aria-selected="true"] { color: var(--fg); background: var(--panel);
+               border-color: var(--line); border-bottom-color: var(--panel); }
+  main { padding: 20px 22px 60px; max-width: 1100px; }
+  section { display: none; } section.on { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+          padding: 16px; margin-bottom: 14px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  textarea, input[type=text], select { background: #0c0e12; color: var(--fg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    font: inherit; width: 100%; }
+  textarea { min-height: 84px; resize: vertical; font-family: var(--mono); font-size: 13px; }
+  button.go { background: var(--accent); color: #06101f; border: 0; border-radius: 8px;
+    padding: 10px 18px; font-weight: 600; cursor: pointer; font-size: 14px; }
+  button.go:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: none; border: 1px solid var(--line); color: var(--fg);
+    border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 13px; }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+    font-size: 12px; color: var(--dim); font-family: var(--mono); }
+  .chip.on { color: var(--accent); border-color: var(--accent); }
+  label.inline { display: flex; gap: 6px; align-items: center; color: var(--dim);
+    font-size: 13px; cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .04em; }
+  td.mono, .mono { font-family: var(--mono); font-size: 12.5px; }
+  pre { background: #0c0e12; border: 1px solid var(--line); border-radius: 8px;
+        padding: 12px; overflow: auto; font-family: var(--mono); font-size: 12.5px;
+        white-space: pre-wrap; word-break: break-word; margin: 0; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  .dim { color: var(--dim); }
+  .answer { font-family: var(--mono); font-size: 13px; white-space: pre-wrap;
+            word-break: break-word; }
+  details { border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; }
+  details > summary { cursor: pointer; padding: 9px 12px; font-size: 13px; color: var(--dim); }
+  details[open] > summary { border-bottom: 1px solid var(--line); }
+  details .body { padding: 12px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line);
+             border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .err { color: var(--bad); font-size: 13px; }
+  .hint { color: var(--dim); font-size: 13px; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>fleet</h1>
+  <span class="sub">a harness for harnesses</span>
+  <div class="right">
+    <span id="hstatus" class="chip">connecting…</span>
+    <span id="hdot" class="dot"></span>
+  </div>
+</header>
+
+<nav id="nav">
+  <button data-tab="run" aria-selected="true">Run</button>
+  <button data-tab="harnesses">Harnesses</button>
+  <button data-tab="sessions">Sessions</button>
+  <button data-tab="memory">Memory</button>
+  <button data-tab="engine">Engine</button>
+</nav>
+
+<main>
+
+  <!-- ---------------------------------------------------------------- run -->
+  <section id="tab-run" class="on">
+    <div class="card">
+      <textarea id="task" placeholder="Give it a task. Several harnesses can answer it at once."></textarea>
+      <div class="row" style="margin-top:10px">
+        <select id="mode" style="width:auto">
+          <option value="auto">planner decides</option>
+          <option value="unison">unison — several answer, merged</option>
+          <option value="serial">serial — each sees the last</option>
+        </select>
+        <select id="harness" style="width:auto"><option value="auto">auto</option></select>
+        <label class="inline"><input type="checkbox" id="resumeLast"> resume last</label>
+        <button class="go" id="runBtn">Run</button>
+        <span id="runStatus" class="dim"></span>
+      </div>
+      <div class="hint">A run writes its turns to shared memory as they arrive, so a conversation is never lost.</div>
+    </div>
+    <div id="runOut"></div>
+  </section>
+
+  <!-- ----------------------------------------------------------- harnesses -->
+  <section id="tab-harnesses">
+    <div class="card">
+      <div class="row">
+        <strong>Live harnesses</strong>
+        <span class="dim" id="hdir"></span>
+        <button class="ghost" id="reloadH" style="margin-left:auto">reload</button>
+      </div>
+      <div class="hint">This list is the directory. Adding a file adds a harness; deleting one removes it. Neither needs a restart.</div>
+    </div>
+    <div class="card"><table id="hlist"><tbody></tbody></table></div>
+    <div class="card">
+      <strong>Add a harness</strong>
+      <div class="hint">Paste a descriptor. It is validated, installed atomically, and live on the next call.</div>
+      <textarea id="hnew" style="margin-top:10px; min-height:150px" placeholder='name = "myharness"
+kind = "openai-compat"
+api_key_env = "MY_KEY"
+route = "jev"
+enabled = true
+
+[http]
+base_url = "https://api.example.ai/v1"'></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="go" id="addH">Install</button>
+        <span id="addHStatus" class="dim"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------ sessions -->
+  <section id="tab-sessions">
+    <div class="card">
+      <div class="row"><strong>Conversations</strong>
+        <button class="ghost" id="reloadS" style="margin-left:auto">reload</button></div>
+      <div class="hint">Every turn is stored in full, with the harness and model that served it.</div>
+    </div>
+    <div id="sessions"></div>
+  </section>
+
+  <!-- -------------------------------------------------------------- memory -->
+  <section id="tab-memory">
+    <div class="card">
+      <div class="row">
+        <input type="text" id="memq" placeholder="search memory…" style="width:auto; min-width:260px">
+        <button class="ghost" id="memSearch">search</button>
+        <input type="text" id="memScope" value="global" style="width:auto; max-width:150px">
+        <button class="ghost" id="memList">list scope</button>
+      </div>
+      <div class="hint">Last version wins. Superseded values are kept and reachable through history.</div>
+    </div>
+    <div id="memOut"></div>
+  </section>
+
+  <!-- -------------------------------------------------------------- engine -->
+  <section id="tab-engine">
+    <div class="grid2">
+      <div class="card">
+        <strong>Configuration</strong>
+        <pre id="cfg" class="mono" style="margin-top:10px">…</pre>
+      </div>
+      <div class="card">
+        <strong>Self-modification ceiling</strong>
+        <pre id="sm" class="mono" style="margin-top:10px">…</pre>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row"><strong>Lessons</strong>
+        <span class="dim">harvested from every run, read back before the next</span></div>
+      <div id="lessons" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <div class="row"><strong>Ledger</strong>
+        <select id="ledgerKind" style="width:auto; margin-left:auto">
+          <option value="">all kinds</option>
+          <option>route</option><option>call</option><option>plan</option>
+          <option>run</option><option>lesson</option><option>verify</option>
+          <option>mark</option><option>harness</option><option>plugin</option>
+        </select>
+      </div>
+      <div id="ledger" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const api = async (path, opts) => {
+  const r = await fetch(path, opts);
+  const text = await r.text();
+  let body; try { body = JSON.parse(text); } catch { body = { raw: text }; }
+  if (!r.ok) throw new Error(body.error || body.raw || ("HTTP " + r.status));
+  return body;
+};
+
+// ---- tabs -----------------------------------------------------------------
+$("#nav").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-tab]"); if (!b) return;
+  document.querySelectorAll("#nav button").forEach(x =>
+    x.setAttribute("aria-selected", String(x === b)));
+  document.querySelectorAll("section").forEach(s => s.classList.remove("on"));
+  $("#tab-" + b.dataset.tab).classList.add("on");
+  if (b.dataset.tab === "sessions") loadSessions();
+  if (b.dataset.tab === "memory") loadMemory();
+  if (b.dataset.tab === "engine") loadEngine();
+  if (b.dataset.tab === "harnesses") loadHarnesses();
+});
+
+// ---- health ---------------------------------------------------------------
+async function health() {
+  try {
+    const h = await api("/health");
+    $("#hstatus").textContent = `${h.harnesses} harness${h.harnesses === 1 ? "" : "es"}` +
+      (h.load_errors ? ` · ${h.load_errors} load error` : "") + ` · v${h.version}`;
+    $("#hdot").className = "dot ok";
+  } catch (e) {
+    $("#hstatus").textContent = "unreachable";
+    $("#hdot").className = "dot bad";
+  }
+}
+
+// ---- run ------------------------------------------------------------------
+$("#runBtn").addEventListener("click", async () => {
+  const task = $("#task").value.trim();
+  const resumeLast = $("#resumeLast").checked;
+  if (!task && !resumeLast) { $("#runStatus").innerHTML = '<span class="err">give it a task</span>'; return; }
+  const body = { task, harness: $("#harness").value, mode: $("#mode").value };
+  if (resumeLast) body.resume = "last";
+  $("#runBtn").disabled = true;
+  $("#runStatus").innerHTML = '<span class="spinner"></span> running…';
+  const t0 = Date.now();
+  try {
+    const d = await api("/v1/run", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    renderRun(d, Date.now() - t0);
+    $("#runStatus").textContent = `${d.mode} · ${d.calls.length} call(s) · ${((Date.now()-t0)/1000).toFixed(1)}s`;
+  } catch (e) {
+    $("#runStatus").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  } finally {
+    $("#runBtn").disabled = false;
+    health();
+  }
+});
+
+function renderRun(d, ms) {
+  const rows = d.calls.map(c => `
+    <tr>
+      <td class="mono">${esc(c.harness)}</td>
+      <td class="mono dim">${esc(c.model || "—")}</td>
+      <td class="mono dim">${esc(c.effort || "—")}</td>
+      <td class="${c.ok ? "ok" : "bad"}">${c.ok ? "ok" : "FAILED"}</td>
+      <td class="mono dim">${c.ms}ms</td>
+      <td class="dim" style="max-width:340px">${esc(c.ok ? "" : c.error)}</td>
+    </tr>`).join("");
+  const others = d.calls.filter(c => c.ok && c.harness !== d.winner).map(c => `
+    <details><summary>${esc(c.harness)} — ${esc(c.model || "—")}</summary>
+      <div class="body answer">${esc(c.output)}</div></details>`).join("");
+  $("#runOut").innerHTML = `
+    <div class="card">
+      <div class="row"><span class="chip on">${esc(d.mode)}</span>
+        <span class="chip">session ${esc(d.session)}</span>
+        <span class="chip">run ${esc(d.run)}</span>
+        <span class="chip">${ms}ms total</span>
+        <span class="chip">winner ${esc(d.winner || "—")}</span></div>
+      <table style="margin-top:12px"><thead><tr>
+        <th>harness</th><th>model</th><th>effort</th><th></th><th>time</th><th>error</th>
+      </tr></thead><tbody>${rows}</tbody></table>
+    </div>
+    <div class="card"><strong>Answer</strong>
+      <div class="answer" style="margin-top:10px">${esc(d.answer)}</div></div>
+    ${others ? `<div class="card"><strong>Also answered</strong>${others}</div>` : ""}
+    ${d.lessons && d.lessons.length ? `<div class="card"><strong>Learned</strong><ul>${
+      d.lessons.map(l => `<li class="dim">[${esc(l.kind)}×${l.seen}] ${esc(l.text)}</li>`).join("")
+    }</ul></div>` : ""}`;
+}
+
+// ---- harnesses ------------------------------------------------------------
+async function loadHarnesses() {
+  try {
+    const d = await api("/v1/harnesses");
+    $("#hdir").textContent = "in the harness directory";
+    const rows = d.harnesses.map(h => `
+      <tr>
+        <td class="mono">${esc(h.name)}</td>
+        <td class="mono dim">${esc(h.kind)}</td>
+        <td class="mono dim">${esc(h.route)}</td>
+        <td class="${h.available ? "ok" : "warn"}">${h.available ? "●" : "○"} ${esc(h.detail)}</td>
+        <td>${h.enabled ? '<span class="dim">on</span>' : '<span class="warn">off</span>'}</td>
+        <td class="dim">${esc((h.tags || []).join(", "))}</td>
+        <td style="text-align:right"><button class="ghost" data-rm="${esc(h.name)}">remove</button></td>
+      </tr>
+      <tr><td colspan="7" class="dim" style="padding-top:0">${esc(h.description)}</td></tr>`).join("");
+    const errs = (d.errors || []).map(e =>
+      `<tr><td colspan="7" class="bad mono">${esc(e.path)}: ${esc(e.error)}</td></tr>`).join("");
+    $("#hlist").innerHTML = `<tbody>${rows}${errs}</tbody>`;
+    $("#hlist").querySelectorAll("button[data-rm]").forEach(b => b.addEventListener("click", async () => {
+      if (!confirm(`Remove harness "${b.dataset.rm}"? It leaves the next run.`)) return;
+      await api("/v1/harnesses/" + encodeURIComponent(b.dataset.rm), { method: "DELETE" });
+      loadHarnesses(); fillHarnessSelect(); health();
+    }));
+  } catch (e) {
+    $("#hlist").innerHTML = `<tbody><tr><td class="bad">${esc(e.message)}</td></tr></tbody>`;
+  }
+}
+$("#reloadH").addEventListener("click", loadHarnesses);
+$("#addH").addEventListener("click", async () => {
+  const body = $("#hnew").value;
+  if (!body.trim()) return;
+  $("#addHStatus").innerHTML = '<span class="spinner"></span>';
+  try {
+    const r = await api("/v1/harnesses", { method: "POST", body });
+    $("#addHStatus").innerHTML = `<span class="ok">installed ${esc(r.installed)} — live now</span>`;
+    $("#hnew").value = "";
+    loadHarnesses(); fillHarnessSelect(); health();
+  } catch (e) {
+    $("#addHStatus").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+});
+
+async function fillHarnessSelect() {
+  try {
+    const d = await api("/v1/harnesses");
+    const sel = $("#harness");
+    const cur = sel.value;
+    sel.innerHTML = '<option value="auto">auto</option>' + d.harnesses
+      .map(h => `<option value="${esc(h.name)}">${esc(h.name)}</option>`).join("");
+    sel.value = cur && [...sel.options].some(o => o.value === cur) ? cur : "auto";
+  } catch {}
+}
+
+// ---- sessions -------------------------------------------------------------
+async function loadSessions() {
+  try {
+    const d = await api("/v1/sessions");
+    $("#sessions").innerHTML = d.sessions.length ? d.sessions.map(s => `
+      <div class="card">
+        <div class="row"><span class="chip">${esc(s.id)}</span>
+          <span class="chip">${s.turns} turns</span>
+          <span class="chip">${esc(s.status)}</span>
+          <span class="dim">${esc(s.updated)}</span></div>
+        <div style="margin-top:8px">${esc(s.title)}</div>
+        <details><summary>transcript</summary><div class="body" id="tr-${esc(s.id)}">…</div></details>
+      </div>`).join("") : '<div class="card dim">no conversations yet</div>';
+    document.querySelectorAll("details").forEach(det => det.addEventListener("toggle", async () => {
+      if (!det.open) return;
+      const id = det.querySelector(".body").id.replace(/^tr-/, "");
+      const body = $("#" + CSS.escape("tr-" + id));
+      if (body.dataset.loaded) return;
+      const t = await api("/v1/sessions/" + encodeURIComponent(id) + "?limit=200");
+      body.innerHTML = t.turns.map(x => `
+        <div style="margin-bottom:10px">
+          <span class="chip">${esc(x.role)}${x.harness ? "·" + esc(x.harness) : ""}</span>
+          ${x.model ? `<span class="dim mono"> ${esc(x.model)}</span>` : ""}
+          <div class="answer" style="margin-top:4px">${esc(x.text)}</div>
+        </div>`).join("");
+      body.dataset.loaded = "1";
+    }));
+  } catch (e) { $("#sessions").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; }
+}
+$("#reloadS").addEventListener("click", loadSessions);
+
+// ---- memory ---------------------------------------------------------------
+async function loadMemory() {
+  const q = $("#memq").value.trim();
+  const scope = $("#memScope").value.trim() || "global";
+  try {
+    const d = q ? await api("/v1/memory?q=" + encodeURIComponent(q))
+                : await api("/v1/memory?scope=" + encodeURIComponent(scope));
+    const items = q ? (d.results || []).map(r => [r.scope + "/" + r.key, r.value])
+                    : (d.entries || []).map(r => [scope + "/" + r.key, r.value]);
+    $("#memOut").innerHTML = `<div class="card">${items.length ? `<table><tbody>${
+      items.map(([k, v]) => `<tr><td class="mono" style="white-space:nowrap">${esc(k)}</td>
+        <td class="dim">${esc(v)}</td></tr>`).join("")}</tbody></table>`
+      : '<span class="dim">nothing here</span>'}</div>`;
+  } catch (e) { $("#memOut").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; }
+}
+$("#memSearch").addEventListener("click", loadMemory);
+$("#memList").addEventListener("click", loadMemory);
+$("#memq").addEventListener("keydown", (e) => { if (e.key === "Enter") loadMemory(); });
+
+// ---- engine ---------------------------------------------------------------
+async function loadEngine() {
+  try { $("#cfg").textContent = JSON.stringify(await api("/v1/config"), null, 2); } catch (e) { $("#cfg").textContent = e.message; }
+  try { $("#sm").textContent = JSON.stringify(await api("/v1/selfmod"), null, 2); } catch (e) { $("#sm").textContent = e.message; }
+  try {
+    const l = await api("/v1/lessons?limit=40");
+    $("#lessons").innerHTML = (l.lessons || []).length ? `<table><tbody>${
+      l.lessons.map(x => `<tr><td class="mono dim" style="white-space:nowrap">[${esc(x.kind)}×${x.seen}]</td>
+        <td>${esc(x.text)}</td></tr>`).join("")}</tbody></table>` : '<span class="dim">nothing learned yet</span>';
+  } catch (e) { $("#lessons").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  loadLedger();
+}
+async function loadLedger() {
+  const k = $("#ledgerKind").value;
+  try {
+    const d = await api("/v1/ledger?limit=60" + (k ? "&kind=" + encodeURIComponent(k) : ""));
+    $("#ledger").innerHTML = (d.entries || []).length ? `<table><tbody>${
+      d.entries.map(e => `<tr>
+        <td class="mono dim" style="white-space:nowrap">${esc(e.ts.slice(11, 19))}</td>
+        <td class="mono">${esc(e.kind)}</td>
+        <td class="${e.ok ? "dim" : "bad"}">${e.ok ? "ok" : "FAIL"}</td>
+        <td class="mono dim">${esc(e.harness)}</td>
+        <td class="dim">${esc((e.subject + " " + e.detail).slice(0, 180))}</td></tr>`).join("")
+    }</tbody></table>` : '<span class="dim">empty</span>';
+  } catch (e) { $("#ledger").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+}
+$("#ledgerKind").addEventListener("change", loadLedger);
+
+// ---- boot -----------------------------------------------------------------
+health(); fillHarnessSelect(); loadHarnesses();
+setInterval(health, 20000);
+</script>
+</body>
+</html>
