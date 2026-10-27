@@ -282,9 +282,20 @@ pub fn detect(e: &Entry) -> (bool, String) {
         };
     }
     if let Some(u) = &d.http {
-        return match ureq::get(u).timeout(std::time::Duration::from_secs(3)).call() {
-            Ok(_) => (true, format!("{u} answered")),
-            Err(ureq::Error::Status(c, _)) => (true, format!("{u} answered {c}")),
+        // A 404 from a server that IS listening still proves something is
+        // listening, which is what an `http` rule asks. But a local model server
+        // that answers 404 on its base path is NOT usable, and treating it as
+        // present made the doctor auto-wire a dead endpoint. So the probe asks
+        // the one endpoint every OpenAI-compatible server must serve, and only a
+        // 2xx counts.
+        let probe = if u.ends_with("/v1") || u.ends_with("/v1/") {
+            format!("{}models", if u.ends_with('/') { u.clone() } else { format!("{u}/") })
+        } else {
+            u.clone()
+        };
+        return match ureq::get(&probe).timeout(std::time::Duration::from_secs(3)).call() {
+            Ok(_) => (true, format!("{probe} answered")),
+            Err(ureq::Error::Status(c, _)) => (false, format!("{probe} answered {c} (not usable)")),
             Err(err) => (false, format!("{u} unreachable: {err}")),
         };
     }

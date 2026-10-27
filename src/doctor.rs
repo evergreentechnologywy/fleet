@@ -447,6 +447,20 @@ pub fn heal(dry_run: bool) -> anyhow::Result<Vec<String>> {
             log.push(format!("would {action}"));
             continue;
         }
+        // An entry with no artifact to copy is not a failure: a runner, an
+        // integration, and a local provider that is already reachable need
+        // nothing wired. Only a missing artifact for a kind that HAS one is.
+        let has_artifact = match d.entry.kind {
+            crate::catalog::Kind::Harness => d.dir.join("harness.toml").is_file(),
+            crate::catalog::Kind::Plugin => d.dir.join("plugin").is_dir(),
+            crate::catalog::Kind::Target => d.dir.join("target").is_dir(),
+            crate::catalog::Kind::Provider => d.dir.join("provider.toml").is_file(),
+            _ => false,
+        };
+        if !has_artifact {
+            log.push(format!("skip {} (nothing to wire for this kind)", d.entry.name));
+            continue;
+        }
         match crate::catalog::install_artifact(&d.entry, &d.dir) {
             Ok(paths) => log.push(format!(
                 "{action} -> {}",
