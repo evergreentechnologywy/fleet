@@ -339,6 +339,23 @@ impl Harness {
     }
 }
 
+/// Is this ceiling entry a concrete MODEL id, rather than a router alias or a
+/// wildcard?
+///
+/// The distinction is not cosmetic. A harness that reaches the chooser's OpenAI
+/// door declares the door's alias (`jev/auto`), because the door resolves the
+/// authorized model itself; a harness that talks to a provider declares real ids.
+/// Treating the two the same made the router "clamp" every decision an aliased
+/// harness received — 492 times in one ledger — silently replacing the chooser's
+/// pick and recording a reason that read like a normal route.
+///
+/// `*` and empty are not fields either: neither constrains anything, which is
+/// exactly what the doctor reports as `capability.unclamped`.
+pub fn is_model_field(m: &str) -> bool {
+    let m = m.trim();
+    !(m.is_empty() || m == "*" || m == "auto" || m == "jev/auto")
+}
+
 /// Append a model/effort flag, in whichever of the three shapes the descriptor
 /// used. Getting this wrong is silent: a bare `-m` with no value is accepted by
 /// the argument parser and only fails inside the child process, as a message

@@ -339,6 +339,39 @@ fn check_capability_contract(r: &mut Report) {
                 )),
             });
         }
+        // A ceiling made ONLY of router aliases (`jev/auto`, `auto`) is the other
+        // half of the same fault, and the more deceptive one: it looks like a
+        // declaration, so nothing reports it, while the router either clamped
+        // every decision against it or learned to ignore it entirely.
+        //
+        // Measured 2026-10-27: `omp.toml` declared `["jev/auto","auto"]`, both
+        // aliases, and the ledger recorded 492 `not in harness ceiling` swaps —
+        // each one replacing the chooser's pick while writing a reason that read
+        // like a normal route. Two aliases are not a ceiling.
+        if h.kind == crate::registry::Kind::Cli
+            && !h.models.is_empty()
+            && !h.models.iter().any(|m| crate::registry::is_model_field(m))
+        {
+            r.push(Finding {
+                severity: Severity::Suggestion,
+                code: "capability.alias_only".into(),
+                summary: format!(
+                    "harness `{}` declares only router aliases ({:?}), not models",
+                    h.name, h.models
+                ),
+                evidence: "an alias is resolved by the router, so this list cannot act as a \
+                           ceiling; the router ignores it and the reason string stays silent \
+                           about which model was really used"
+                    .into(),
+                fix: Some(format!(
+                    "declare the model ids `{}` actually accepts in {}/harnesses/{}.toml, \
+                     or leave `models` empty to say plainly that anything goes",
+                    h.name,
+                    crate::paths::home().display(),
+                    h.name
+                )),
+            });
+        }
         // A CLI harness whose command is a bare name and is not on PATH is
         // already reported; here we catch the config-shaped faults.
         if h.route == crate::registry::Route::Jev {

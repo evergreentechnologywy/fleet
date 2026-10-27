@@ -380,11 +380,31 @@ impl Router {
         };
 
         // Harness ceiling: never hand a harness a model it did not declare.
-        if !d.model.is_empty() && !harness.accepts(&d.model) {
+        //
+        // But a declaration can name a ROUTER ALIAS rather than a model. A
+        // harness with `route = "jev"` that reaches the chooser's OpenAI door
+        // declares `models = ["jev/auto", "auto"]`, because the door resolves an
+        // authorized model itself — the alias IS its contract. Clamping such a
+        // harness to its own alias list rejected every real decision, which was
+        // measured 492 times in one ledger: each rejection quietly swapped the
+        // chooser's pick for the alias and rewrote `reason`, so the run looked
+        // routed while a fixed model was actually used.
+        //
+        // So a field only limits itself when it declares fields. An alias-only
+        // list, or one containing "*", constrains nothing by definition and must
+        // not be reported as if it did.
+        let clamps = harness.models.iter().any(|m| crate::registry::is_model_field(m));
+        if clamps && !d.model.is_empty() && !harness.accepts(&d.model) {
             let fallback = harness
                 .effective_model()
                 .map(|s| s.to_string())
-                .or_else(|| harness.models.first().cloned())
+                .or_else(|| {
+                    harness
+                        .models
+                        .iter()
+                        .find(|m| crate::registry::is_model_field(m))
+                        .cloned()
+                })
                 .unwrap_or_default();
             d.reason = format!(
                 "{}; {} not in harness ceiling {:?}, using {}",

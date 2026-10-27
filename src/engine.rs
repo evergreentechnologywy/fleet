@@ -1381,7 +1381,17 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
             ts: crate::now(),
             role: "assistant".into(),
             harness: winner.clone(),
-            model: String::new(),
+            // The model, not just the harness. This used to be an empty string,
+            // so "which model produced this answer" was unrecoverable after the
+            // fact: the harness was named but the model that wrote the text was
+            // not. Three of four harnesses asked for exactly this independently —
+            // a merged answer is unattributable without it, and a bad claim
+            // cannot be traced back to the model that made it.
+            model: calls
+                .iter()
+                .find(|c| c.harness == winner && c.ok)
+                .map(|c| c.model.clone())
+                .unwrap_or_default(),
             text: crate::runner::truncate(&answer, 200_000),
             run_id: run_id.clone(),
             ok: true,
