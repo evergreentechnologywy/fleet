@@ -84,7 +84,6 @@ pub fn serve(host: &str, port: u16) -> Result<()> {
     let mut handles = Vec::new();
     for h in hosts {
         let reg = Registry::new(registry.dir().to_path_buf());
-        let port = port;
         handles.push(std::thread::spawn(move || {
             if let Err(e) = serve_one(&h, port, &reg) {
                 eprintln!("fleet: listener {h}:{port} stopped: {e}");

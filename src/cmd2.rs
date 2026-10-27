@@ -955,6 +955,19 @@ pub fn onboard(a: OnboardArgs, json: bool) -> Result<()> {
     if std::env::var("FLEET_SKIP_SELFCHECK").is_err() {
         let _ = self_check(&reg);
     }
+
+    // The domain step, last and OPTIONAL. It runs only when asked for, because it
+    // costs money and the fleet works on a tailnet URL without one.
+    if let Some(d) = a.domain.as_deref().filter(|d| !d.is_empty()) {
+        onboard_domain(d, json)?;
+    } else if !a.no_domain && !json {
+        println!();
+        println!("domain (optional): serve the web app on a name of your own.");
+        println!("  check a name first:  fleet domain check <name>");
+        println!("  free names:         fleet domain free <your-project>");
+        println!("  then:               fleet onboard --domain <name>");
+        println!("  skip:               fleet onboard --no-domain");
+    }
     Ok(())
 }
 
