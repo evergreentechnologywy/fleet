@@ -42,7 +42,10 @@ pub fn run(a: RunArgs, json: bool) -> Result<()> {
         verbose: a.verbose,
         brief_prefix,
         no_lessons: a.no_lessons,
-        dry: false,
+        // `-q` means "the answer and nothing else": it suppresses the progress
+        // lines AND the "Also answered" appendix, which is what a chat caller
+        // needs and what a human comparing harnesses does not.
+        dry: a.quiet,
         direct_model: a.model.clone(),
         direct_provider: a.provider.clone(),
         direct_api_key: a.api_key.clone(),

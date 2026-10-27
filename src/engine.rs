@@ -1187,7 +1187,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
         }
     }
 
-    let (answer, winner) = merge(&plan, &calls);
+    let (answer, winner) = merge(&plan, &calls, opts.dry);
     let ok_count = calls.iter().filter(|c| c.ok).count();
     let status = if ok_count == 0 {
         "failed"
@@ -1288,7 +1288,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
 /// wrapped with a ranked index of what the others said. That keeps the result
 /// deterministic, free, and auditable — and it means a run never depends on a
 /// second model call just to be understood.
-fn merge(plan: &Plan, calls: &[Outcome]) -> (String, String) {
+fn merge(plan: &Plan, calls: &[Outcome], dry: bool) -> (String, String) {
     let ok: Vec<&Outcome> = calls
         .iter()
         .filter(|c| c.ok && !c.output.trim().is_empty())
@@ -1351,6 +1351,12 @@ fn merge(plan: &Plan, calls: &[Outcome]) -> (String, String) {
     let winner = ranked[0];
     let mut out = String::new();
     out.push_str(winner.output.trim());
+    // `dry` means "give me the answer, nothing else" — which is what a chat
+    // gateway needs. The appendix stays for an interactive run, where seeing
+    // which other harnesses answered is the point of a unison call.
+    if dry {
+        return (out, winner.harness.clone());
+    }
     out.push_str(&format!(
         "\n\n---\n# Also answered ({} harness runs, {} ok)\n",
         calls.len(),
