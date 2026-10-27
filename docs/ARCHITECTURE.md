@@ -146,6 +146,15 @@ missing `passed`, or a timeout all count as failed.
 
 The ledger is truth: a failed verdict is a durable row. Off by default.
 
+### The app is one artifact
+
+`webapp.html` is `include_str!`'d into the binary and served at `/app` (and `/`).
+No build step, no bundler, no `node_modules`: a local app and a hosted app are the
+same bytes, and it cannot drift from the API because it calls the documented
+routes. Deleting a harness in the UI calls the same `DELETE` the CLI calls, which
+removes the same file the registry re-reads — which is why the seamlessness is
+identical on every surface.
+
 ### Lessons are harvested, not scheduled
 
 After every run, `lessons::harvest` derives durable facts from evidence the run

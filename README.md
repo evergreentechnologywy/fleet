@@ -294,6 +294,19 @@ $ fleet ledger --kind call --limit 5
 $ fleet serve --host 0.0.0.0 --port 8787
 ```
 
+Open <http://localhost:8787/app>. The page is embedded in the binary — no build
+step, no bundler, no `node_modules` — so a local app and a hosted app are the
+same artifact, and it cannot drift from the API because it calls the routes
+documented below.
+
+| tab | what it is for |
+|---|---|
+| **run** | give it a task, pick planner/unison/serial, and see each harness's answer with the model it was served |
+| **harnesses** | the live list with availability; install by pasting a descriptor, remove with a button — no restart on either side |
+| **sessions** | conversations and their full transcripts |
+| **memory** | search and per-scope listing, with the history of any key |
+| **engine** | configuration, the self-modification ceiling, lessons, and the ledger |
+
 ```
 GET    /health
 GET    /v1/harnesses              POST /v1/harnesses      DELETE /v1/harnesses/{name}
