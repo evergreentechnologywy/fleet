@@ -441,6 +441,11 @@ PREFIX="{prefix}"
 PORT="{port}"
 BIN="$PREFIX/bin/fleet"
 mkdir -p "$PREFIX/bin" "$HOME/.fleet/harnesses" "$HOME/.fleet/scripts"
+# An empty env file with the right mode: the documented place for provider keys.
+if [ ! -f "$HOME/.fleet/env" ]; then
+  : > "$HOME/.fleet/env"
+  chmod 600 "$HOME/.fleet/env"
+fi
 if [ -f /tmp/fleet-deploy/fleet ]; then install -m 0755 /tmp/fleet-deploy/fleet "$BIN"; fi
 # Descriptors: unpack whatever was staged, then copy any loose files. The
 # staging directory is where the deploy put them, so this works whether the
@@ -481,6 +486,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=FLEET_HOME=/root/.fleet
+# Provider keys are NEVER deployed: they are named in the descriptors and read
+# from this file, which the operator writes on the host. Without it a harness
+# that needs a credential fails with "set TB_API_KEY", which is the intended
+# message rather than a mystery.
+EnvironmentFile=-/root/.fleet/env
 ExecStart=/usr/local/bin/fleet serve --host 0.0.0.0 --port PORT
 Restart=always
 RestartSec=3

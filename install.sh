@@ -83,6 +83,9 @@ say "fleet: installed $PREFIX/bin/fleet"
 # only makes the first run obvious.
 HOME_DIR="${HOME:-/root}/.fleet"
 $SUDO mkdir -p "$HOME_DIR/harnesses"
+if [ ! -f "$HOME_DIR/env" ]; then
+  $SUDO sh -c ": > '$HOME_DIR/env' && chmod 600 '$HOME_DIR/env'"
+fi
 if [ ! -f "$HOME_DIR/README.md" ]; then
   "$PREFIX/bin/fleet" paths >/dev/null 2>&1 || true
 fi
@@ -100,6 +103,10 @@ Wants=network-online.target
 Type=simple
 User=$USER_NAME
 Environment=FLEET_HOME=$HOME_DIR
+# Provider keys are never part of an install. They are named in the descriptors
+# and read from here; the file is created empty with mode 600 so there is one
+# obvious place to put them.
+EnvironmentFile=-$HOME_DIR/env
 ExecStart=$PREFIX/bin/fleet serve --host 0.0.0.0 --port $PORT
 Restart=always
 RestartSec=3
