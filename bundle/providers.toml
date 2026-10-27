@@ -1,0 +1,21 @@
+# Providers are fleet-wide: declare once, every harness can use it.
+# A key is always named, never written, so this file stays publishable.
+#
+# [[provider]]
+# name = "myprovider"
+# base_url = "https://api.myprovider.ai/v1"
+# key_env = "MYPROVIDER_API_KEY"
+# models = ["*"]
+# # Harnesses that must never receive it:
+# block = []
+
+[[provider]]
+name = "tokenbroker"
+base_url = "https://api.thetokenbroker.ai/v1"
+key_env = "TB_API_KEY"
+models = ["*"]
+block = []
+enabled = true
+notes = "detected from the environment at onboarding"
+
+[provider.extra]

@@ -1,0 +1,24 @@
+name = "omp"
+description = "omp coding agent: tools, PTY, skills, long autonomous runs"
+kind = "cli"
+
+command = "omp"
+# {prompt} is substituted per call. `-p` is print mode: process and exit.
+args = ["-p", "{prompt}"]
+# omp takes `--model <id>` and `--thinking <level>`.
+model_flag = ["--model", "{model}"]
+effort_flag = ["--thinking", "{effort}"]
+prompt_on_stdin = false
+
+# `self-routing`: point it at the chooser's OpenAI door and let the model it
+# picks per turn be a fleet decision. Set route = "jev" instead to pin one model
+# per run from the command line.
+route = "jev"
+models = ["*"]
+effort = "high"
+
+tags = ["code", "tools", "long", "repo"]
+priority = 90
+cost_hint = 0.05
+enabled = true
+timeout_s = 3600

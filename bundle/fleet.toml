@@ -1,0 +1,14 @@
+[chooser]
+kind = "cli"
+command = "/opt/fleet/scripts/jev_text_route.py"
+args = [
+    "--request",
+    "{prompt}",
+    "--json",
+]
+ttl_s = 300
+
+[defaults]
+model = "deepseek-v4.1-flash"
+provider_base = "https://api.thetokenbroker.ai/v1"
+provider_key_env = "TB_API_KEY"

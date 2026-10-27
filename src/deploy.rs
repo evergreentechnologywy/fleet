@@ -253,6 +253,44 @@ pub fn deploy(spec: &DeploySpec, dry_run: bool) -> Result<Vec<String>> {
                 String::from_utf8_lossy(&out.stdout).trim()
             ));
 
+            // The descriptors travel with the binary. A deploy that installs an
+            // engine with no harnesses on the far side is a deploy that looks
+            // successful and does nothing, so the assets are streamed as a tar
+            // on the same pipe rather than left behind.
+            if !assets.is_empty() {
+                let tarball = write_bundle("bundle", &assets)?;
+                let bytes = std::fs::read(&tarball)?;
+                log.push(format!(
+                    "streaming {} descriptor file(s), {} bytes",
+                    assets.len(),
+                    bytes.len()
+                ));
+                let mut a = ssh_base.clone();
+                a.push(host.clone());
+                a.push(
+                    "mkdir -p /tmp/fleet-deploy && tar xzf - -C /tmp/fleet-deploy && echo unpacked"
+                        .to_string(),
+                );
+                let mut child = std::process::Command::new("ssh")
+                    .args(&a)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .context("streaming the descriptor bundle")?;
+                {
+                    use std::io::Write;
+                    if let Some(mut si) = child.stdin.take() {
+                        let _ = si.write_all(&bytes);
+                    }
+                }
+                let out = child.wait_with_output()?;
+                log.push(format!(
+                    "descriptors: {}",
+                    String::from_utf8_lossy(&out.stdout).trim()
+                ));
+            }
+
             let script = install_script(&prefix, port);
             let quoted = shell_quote(&script);
             let mut args2 = ssh_base.clone();
@@ -337,27 +375,50 @@ fn collect_assets() -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// Pack the assets next to the pre-built binary and return the tarball path.
+/// Pack the assets and return the tarball path.
+///
+/// The layout mirrors the fleet home — harness descriptors under `harnesses/`,
+/// everything else at the top level — so the install script can unpack it
+/// straight onto a remote host. A flat archive loses the distinction between a
+/// harness and a config file, and the remote side then installs nothing while
+/// reporting success.
 fn write_bundle(dest: &str, assets: &[PathBuf]) -> Result<PathBuf> {
     let dir = PathBuf::from(dest);
     std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(dir.join("harnesses"))?;
+
+    let mut members: Vec<String> = Vec::new();
     for a in assets {
-        if let Some(name) = a.file_name() {
-            let _ = std::fs::copy(a, dir.join(name));
+        let Some(name) = a.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            continue;
+        };
+        // A harness descriptor is identified by living in the harness directory,
+        // not by its filename, so the source path is what decides placement.
+        let is_harness = a
+            .parent()
+            .map(|p| p.ends_with("harnesses"))
+            .unwrap_or(false)
+            && name.ends_with(".toml");
+        if is_harness {
+            std::fs::copy(a, dir.join("harnesses").join(&name))?;
+            members.push(format!("harnesses/{name}"));
+        } else {
+            std::fs::copy(a, dir.join(&name))?;
+            members.push(name);
         }
     }
+
     let tarball = dir.join("fleet-bundle.tar.gz");
-    let list = assets
-        .iter()
-        .filter_map(|a| a.file_name().map(|n| n.to_string_lossy().to_string()))
-        .collect::<Vec<_>>()
-        .join(" ");
-    if !list.is_empty() {
+    if !members.is_empty() {
         let c = crate::runner::run_capture(
             "sh",
             &[
                 "-c".into(),
-                format!("cd {} && tar czf fleet-bundle.tar.gz {list}", dir.display()),
+                format!(
+                    "cd {} && tar czf fleet-bundle.tar.gz {}",
+                    dir.display(),
+                    members.join(" ")
+                ),
             ],
             &[],
             None,
@@ -381,10 +442,34 @@ PORT="{port}"
 BIN="$PREFIX/bin/fleet"
 mkdir -p "$PREFIX/bin" "$HOME/.fleet/harnesses" "$HOME/.fleet/scripts"
 if [ -f /tmp/fleet-deploy/fleet ]; then install -m 0755 /tmp/fleet-deploy/fleet "$BIN"; fi
+# Descriptors: unpack whatever was staged, then copy any loose files. The
+# staging directory is where the deploy put them, so this works whether the
+# caller ran the whole deploy or only the install script.
+for d in /tmp/fleet-deploy .; do
+  [ -d "$d" ] || continue
+  if [ -f "$d/fleet-bundle.tar.gz" ]; then
+    tar xzf "$d/fleet-bundle.tar.gz" -C "$HOME/.fleet" 2>/dev/null || true
+  fi
+  # Nested layout (current): harnesses/ preserved.
+  for f in "$d"/harnesses/*.toml; do
+    [ -e "$f" ] && cp "$f" "$HOME/.fleet/harnesses/" || true
+  done
+  # Config files at the top level.
+  for f in providers.toml peers.toml fleet.toml policy.toml; do
+    [ -f "$d/$f" ] && cp "$d/$f" "$HOME/.fleet/" || true
+  done
+  # Flat layout (older bundles): a descriptor is a toml that is not one of the
+  # four known config files.
+  for f in "$d"/*.toml; do
+    [ -e "$f" ] || continue
+    b=$(basename "$f")
+    case "$b" in
+      providers.toml|peers.toml|fleet.toml|policy.toml) ;;
+      *) cp "$f" "$HOME/.fleet/harnesses/" || true ;;
+    esac
+  done
+done
 if [ -f ./fleet-bundle.tar.gz ]; then tar xzf ./fleet-bundle.tar.gz -C "$HOME/.fleet" 2>/dev/null || true; fi
-for f in harnesses/*.toml; do [ -e "$f" ] && cp "$f" "$HOME/.fleet/harnesses/" || true; done
-[ -f providers.toml ] && cp providers.toml "$HOME/.fleet/" || true
-[ -f fleet.toml ] && cp fleet.toml "$HOME/.fleet/" || true
 FLEET="$BIN" "$BIN" harness list 2>/dev/null || true
 if command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd/system ]; then
   cat > /etc/systemd/system/fleetd.service <<'UNIT'

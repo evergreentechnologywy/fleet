@@ -1,0 +1,18 @@
+name = "verifier"
+description = "Adversarial check of another harness's answer, no network"
+kind = "cli"
+
+# A verifier is a harness like any other. This one is deterministic: it reads
+# the brief and the prior work and asserts what must be true. Replace the
+# command with a model call, a test runner, or a script of your own — the engine
+# does not care which, only that the answer is a check.
+command = "sh"
+args = ["-c", "cat >/dev/null; echo '{\"checked\": true, \"note\": \"no automated verifier configured\"}'"]
+prompt_on_stdin = true
+
+route = "native"
+verifier = true
+tags = ["verify"]
+priority = 0
+enabled = false
+timeout_s = 300

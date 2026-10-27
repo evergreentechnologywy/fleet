@@ -1,0 +1,20 @@
+# A direct provider endpoint: no CLI in between. The model is Jev's decision
+# per call, which is what makes the fleet's chooser authoritative even here.
+name = "tokenbroker"
+description = "Direct tokenbroker endpoint; model chosen by the chooser per call"
+kind = "openai-compat"
+api_key_env = "TB_API_KEY"
+route = "jev"
+models = ["*"]
+effort = "medium"
+tags = ["chat", "fast", "text"]
+priority = 40
+cost_hint = 0.001
+enabled = true
+timeout_s = 180
+
+[http]
+base_url = "https://api.thetokenbroker.ai/v1"
+chat_path = "/v1/chat/completions"
+auth_header = "Authorization"
+auth_scheme = "Bearer"

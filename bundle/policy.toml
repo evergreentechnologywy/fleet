@@ -1,0 +1,5 @@
+# The ceiling: what this engine may ever modify on its own behalf.
+# Nothing here is self-modifiable until this file says so.
+enabled = false
+paths = ["harnesses/*.toml", "mods/**", "memory/**"]
+verifiers = ["toml-parses"]

@@ -1,0 +1,20 @@
+# Peers this fleet coordinates with.
+# The transport is PROBED, in the order tailscale -> ssh -> reason, and
+# the one that worked is remembered. Pin one with `transport = "ssh"`.
+#
+# [[peer]]
+# name = "desk"
+# host = "zenbook"
+# slots = 4
+
+[[peer]]
+name = "zenbook"
+host = "100.78.87.47"
+ssh_args = []
+notes = ""
+
+[[peer]]
+name = "powerstation-1"
+host = "100.65.119.76"
+ssh_args = []
+notes = ""
