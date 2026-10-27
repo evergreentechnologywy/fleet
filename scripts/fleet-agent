@@ -1,0 +1,81 @@
+#!/bin/sh
+# fleet-agent — the drop-in replacement for `omp -p` in existing callers.
+#
+# WHY A WRAPPER rather than teaching `fleet` the whole omp argv: a caller like the
+# gateway builds `omp -p -c --session-dir <dir> [--model m] <text>`, and the shape
+# is omp's, not fleet's. A wrapper absorbs the difference in ONE place, which
+# means:
+#
+#   * the migration is a single environment variable
+#     (`OMP_BIN=/opt/fleet/bin/fleet-agent`), so rollback is changing it back;
+#   * `fleet` itself keeps a clean argv and does not grow compatibility flags for
+#     every caller it replaces;
+#   * when the caller is eventually rewritten, this file is deleted and nothing in
+#     the engine changes.
+#
+# It maps omp's flags onto `fleet run`:
+#
+#   -p                    print mode; fleet run is already non-interactive, so it
+#                         is dropped.
+#   -c                    continue the most recent session.
+#   --session-dir DIR     becomes the run's working directory.
+#   --model M             MAPPED, not passed through. In omp this named a MODEL.
+#                         In fleet, `--model` means "call this MODEL directly with
+#                         no harness" — so passing `--model muse` (a HARNESS name)
+#                         made fleet ask the door for a model called `muse` and
+#                         get a 404. The wrapper therefore checks whether the
+#                         value names a harness and uses `-H` for that, falling
+#                         back to `--model` only when it is not a harness.
+#   <text>                the task.
+#
+# Anything it does not understand is passed through, so a caller using a flag this
+# does not know about fails at fleet with a clear message rather than being
+# silently dropped here.
+
+set -eu
+
+FLEET_BIN="${FLEET_BIN:-/usr/local/bin/fleet}"
+
+# Absorb omp's -p: `fleet run` has no interactive mode to disable.
+set -- "$@" 
+# Is this value a harness the fleet knows? If so it is a harness selector, not a
+# model id — the distinction the caller cannot make, because in omp they were the
+# same namespace.
+is_harness() {
+  [ -f "${FLEET_HOME:-$HOME/.fleet}/harnesses/$1.toml" ]
+}
+
+# The gateway is a CHAT front door: it needs one reply, not a transcript of which
+# other harnesses also answered. `-q` is what suppresses that appendix, so it is
+# always passed. A caller that wants the comparison can use `fleet run` directly.
+args="-q"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|--print) shift ;;                # dropped: fleet run is already non-interactive
+    # omp-only display/session flags. They configure omp's TUI or its session
+    # bookkeeping, neither of which exists here, and passing one would make fleet
+    # exit with "unexpected argument" — a failure that reads as a broken harness
+    # rather than a caller using flags the engine does not have.
+    #   --thinking E    the effort level; fleet's chooser decides effort instead
+    #   --mode text     output mode; fleet's output is text already
+    #   --no-rules --no-title --no-session   omp session/context toggles
+    --thinking) shift 2 ;;
+    --mode) shift 2 ;;
+    --no-rules|--no-title|--no-session) shift ;;
+    --model)
+      v="${2:-}"
+      if is_harness "$v"; then
+        args="$args -H \"$v\""
+      else
+        args="$args --model \"$v\""
+      fi
+      shift 2 ;;
+    *)
+      args="$args \"$(printf '%s' "$1" | sed 's/"/\\"/g')\""
+      shift ;;
+  esac
+done
+
+# Run it. `eval` is safe here because every argument was re-quoted above, and the
+# alternative (bash arrays) is unavailable in a POSIX sh script.
+eval "exec \"$FLEET_BIN\" run $args"
