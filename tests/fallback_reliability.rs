@@ -238,9 +238,21 @@ fn a_fan_out_gets_the_same_fallback_chain_as_a_serial_run() {
     // while everything succeeds and looks like "every harness failed" when one
     // does not, which is exactly what the chain exists to prevent.
     //
-    // `gemini` is disabled, so a fan-out that INCLUDES it must still produce an
-    // answer from somewhere. Asserting on the whole run, not on gemini alone,
-    // is what makes this a parallel-path test.
+    // The pool is derived from what is actually ENABLED, plus one name that is
+    // deliberately not: pinning a literal list made this test rot the moment the
+    // verified set changed (gemini and codex both became disabled, leaving a
+    // single call and a red build). The behaviour under test is "a fan-out of
+    // several harnesses skips the disabled one and still answers", which does not
+    // depend on WHICH harnesses those are.
+    let reg = fleet::registry::Registry::default_dir();
+    let enabled: Vec<String> = reg.enabled().into_iter().map(|h| h.name).collect();
+    assert!(
+        enabled.len() >= 2,
+        "need at least two enabled harnesses to test a fan-out, found {:?}",
+        enabled
+    );
+    let mut pool: Vec<String> = enabled.iter().take(2).cloned().collect();
+    pool.push("definitely-not-a-harness".to_string());
     let opts = fleet::engine::RunOptions {
         harness: None,
         unison: true,
@@ -257,7 +269,7 @@ fn a_fan_out_gets_the_same_fallback_chain_as_a_serial_run() {
         cwd: None,
         continue_session: false,
         subagents: 3,
-        subagent_harnesses: vec!["gemini".into(), "omp".into(), "codex".into()],
+        subagent_harnesses: pool.clone(),
         ..Default::default()
     };
     let r = fleet::engine::run("Reply with exactly: PONG", &opts).expect("fan-out run");
