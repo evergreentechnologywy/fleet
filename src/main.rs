@@ -185,6 +185,30 @@ struct RunArgs {
     /// provider declares. Passed through, never stored.
     #[arg(long)]
     api_key: Option<String>,
+
+    /// Accepted for compatibility with `omp -p --session-dir <dir>`.
+    ///
+    /// The point of accepting it is that swapping an existing caller from omp to
+    /// fleet becomes a ONE-VARIABLE change (`OMP_BIN=/usr/local/bin/fleet`), not a
+    /// code edit — which is what makes the migration reversible if the new path
+    /// misbehaves. The directory is used as the working directory for the run, so
+    /// a caller that kept per-chat state there keeps it.
+    #[arg(long)]
+    session_dir: Option<String>,
+
+    /// Accepted for compatibility with `omp -p -c` (continue). Maps to resuming
+    /// the most recent session.
+    #[arg(long, short = 'c')]
+    continue_session: bool,
+
+    /// Accepted for compatibility with `omp -p` (print mode). It is a NO-OP:
+    /// `fleet run` is already non-interactive, so there is no mode to switch.
+    ///
+    /// The flag exists purely so an existing caller can be repointed at fleet by
+    /// changing one environment variable, which is what makes the migration
+    /// reversible. A caller that keeps passing it gets the same behaviour.
+    #[arg(long, short = 'p')]
+    print_mode: bool,
 }
 
 #[derive(Subcommand, Debug)]

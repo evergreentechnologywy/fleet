@@ -46,6 +46,11 @@ pub fn run(a: RunArgs, json: bool) -> Result<()> {
         direct_model: a.model.clone(),
         direct_provider: a.provider.clone(),
         direct_api_key: a.api_key.clone(),
+        // `--session-dir` becomes the run's working directory; `-c` resumes the
+        // most recent session. Both exist so a caller written against omp keeps
+        // working when it is pointed at fleet.
+        cwd: a.session_dir.clone(),
+        continue_session: a.continue_session,
     };
     let res = fleet::engine::run(&task, &opts)?;
 

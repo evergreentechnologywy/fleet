@@ -329,7 +329,7 @@ impl Harness {
         }
         // Model/effort flags are appended only when we have a value, so a
         // harness that takes neither is expressed with an empty flag list.
-        if !model.is_empty() {
+        if !model.is_empty() && !self.model_flag.is_empty() {
             push_flag(&mut out, &self.model_flag, model);
         }
         if !effort.is_empty() {

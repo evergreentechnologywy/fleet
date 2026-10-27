@@ -37,6 +37,8 @@ fn run_with(harness: &str, task: &str) -> fleet::engine::RunResult {
         direct_model: None,
         direct_provider: None,
         direct_api_key: None,
+        cwd: None,
+        continue_session: false,
     };
     fleet::engine::run(task, &opts).expect("the engine must not error out entirely")
 }
@@ -121,6 +123,8 @@ fn the_direct_model_path_needs_no_harness_at_all() {
         direct_model: Some("deepseek-v4.1-flash".into()),
         direct_provider: Some("chooser".into()),
         direct_api_key: None,
+        cwd: None,
+        continue_session: false,
     };
     let r = fleet::engine::run("Reply with exactly: PONG", &opts).expect("direct call");
     assert_eq!(r.mode, "direct");
@@ -206,6 +210,8 @@ fn a_disabled_harness_is_not_offered_by_the_planner() {
         direct_model: None,
         direct_provider: None,
         direct_api_key: None,
+        cwd: None,
+        continue_session: false,
     };
     let r = fleet::engine::run("Reply with exactly: PONG", &opts).expect("auto run");
     for c in &r.calls {

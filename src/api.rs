@@ -301,6 +301,8 @@ fn serve_one(host: &str, port: u16, registry: &Registry) -> Result<()> {
                         direct_model: v.get("model").and_then(|x| x.as_str()).map(String::from),
                         direct_provider: v.get("provider").and_then(|x| x.as_str()).map(String::from),
                         direct_api_key: None,
+                        cwd: v.get("cwd").and_then(|x| x.as_str()).map(String::from),
+                        continue_session: false,
                         harness: v
                             .get("harness")
                             .and_then(|t| t.as_str())

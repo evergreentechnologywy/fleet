@@ -51,6 +51,10 @@ pub struct RunOptions {
     pub direct_provider: Option<String>,
     /// A key to use for `direct_provider`, overriding the declared one.
     pub direct_api_key: Option<String>,
+    /// Working directory for the run, from `--session-dir` (omp compatibility).
+    pub cwd: Option<String>,
+    /// Resume the most recent session (`-c`, omp compatibility).
+    pub continue_session: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -779,6 +783,36 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
     let router = Arc::new(Router::new(crate::config::Config::load()));
 
     let run_id = crate::short_id();
+
+    // `-c` (omp compatibility) means "continue the most recent session". It is
+    // resolved HERE rather than in the CLI so an API caller gets the same
+    // behaviour, and so a caller that also passed `--resume` still wins by
+    // naming a session explicitly.
+    let mut opts = opts.clone();
+    if opts.continue_session && opts.resume.is_none() && opts.session.is_none() {
+        if let Some(last) = mem.sessions(1)?.first() {
+            opts.resume = Some(last.id.clone());
+        }
+    }
+
+    // `--session-dir` (omp compatibility) becomes the working directory, so a
+    // caller that kept per-chat state in a directory keeps it. An explicit
+    // FLEET_CWD wins, because that is the fleet's own knob.
+    if let Some(dir) = opts
+        .cwd
+        .clone()
+        .filter(|d| !d.is_empty())
+        .or_else(|| std::env::var("FLEET_CWD").ok())
+    {
+        let path = std::path::PathBuf::from(&dir);
+        if path.is_dir() {
+            let _ = std::env::set_current_dir(&path);
+        } else {
+            let _ = std::fs::create_dir_all(&path);
+            let _ = std::env::set_current_dir(&path);
+        }
+    }
+
     let session = match (&opts.resume, &opts.session) {
         (Some(s), _) => s.clone(),
         (None, Some(s)) => s.clone(),
