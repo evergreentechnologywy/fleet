@@ -79,10 +79,18 @@ pub fn run(a: RunArgs, json: bool) -> Result<()> {
         );
         for c in &res.calls {
             eprintln!(
-                "  {:<12} {:<28} {}{}",
+                "  {:<12} {:<28} {}{}{}",
                 c.harness,
                 if c.model.is_empty() { "-" } else { &c.model },
                 if c.ok { "ok" } else { "FAILED" },
+                // Say when the harness that ANSWERED is not the one that was
+                // asked for. Without this a forced-harness run looks successful
+                // while the requested CLI never ran at all.
+                if c.fell_back_from.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (asked for {})", c.fell_back_from)
+                },
                 if c.ok {
                     format!(" ({}ms)", c.ms)
                 } else {

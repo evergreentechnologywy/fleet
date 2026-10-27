@@ -39,6 +39,14 @@ pub struct Outcome {
     /// direct or HTTP call gets real numbers from the response body.
     pub tokens_in: u64,
     pub tokens_out: u64,
+    /// The harness that was ASKED for, when a fallback answered instead.
+    ///
+    /// Without this the result is actively misleading: `--json` showed only the
+    /// substitute, so a caller checking `calls[].harness == "kimi"` found nothing
+    /// and a forced-harness test that only looked at the ANSWER TEXT concluded
+    /// kimi worked. It never ran. Measured 2026-10-27: nine harnesses were
+    /// briefly "enabled" on exactly that mistake.
+    pub fell_back_from: String,
 }
 
 /// Resolve a command into something `spawn` can actually run.

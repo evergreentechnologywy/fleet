@@ -343,6 +343,11 @@ fn run_job_with_fallback(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
             // Say which one actually answered, so the transcript never implies
             // the first harness did the work.
             let mut o = o;
+            // Name the substitution in the RESULT, not only in the prose. A
+            // caller that inspects `calls` (or a test that checks who answered)
+            // otherwise sees only the substitute and concludes the requested
+            // harness worked.
+            o.fell_back_from = job.harness.name.clone();
             o.output = format!(
                 "[answered by {} after {} failed]\n{}",
                 o.harness, job.harness.name, o.output
@@ -605,6 +610,7 @@ fn run_job(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
                 route_reason: format!("{} {}", d.reason, d.source),
                 tokens_in: 0,
                 tokens_out: 0,
+                fell_back_from: String::new(),
             };
         }
         for (k, v) in &fx.env {
@@ -791,6 +797,7 @@ fn run_job(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
                 route_reason: format!("{} {}", d.reason, d.source),
                 tokens_in,
                 tokens_out,
+                fell_back_from: String::new(),
             }
         }
         Err(e) => {
@@ -832,6 +839,7 @@ fn run_job(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
                 route_reason: format!("{} {}", d.reason, d.source),
                 tokens_in: 0,
                 tokens_out: 0,
+                fell_back_from: String::new(),
             }
         }
     }
@@ -1005,6 +1013,7 @@ fn run_direct(
             route_reason: format!("direct call to {model} at {url}"),
             tokens_in: direct_usage.0,
             tokens_out: direct_usage.1,
+            fell_back_from: String::new(),
         }],
         answer: text,
         ms: started.elapsed().as_millis(),
@@ -1031,6 +1040,10 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
     // behaviour, and so a caller that also passed `--resume` still wins by
     // naming a session explicitly.
     let mut opts = opts.clone();
+    // The harness the caller NAMED, before any substitution. Recorded so the
+    // result can say "you asked for X, Y answered" rather than silently
+    // reporting success for a harness that never ran.
+    let requested_harness: Option<String> = opts.harness.clone();
     if opts.continue_session && opts.resume.is_none() && opts.session.is_none() {
         if let Some(last) = mem.sessions(1)?.first() {
             opts.resume = Some(last.id.clone());
@@ -1471,6 +1484,18 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                     prior.push((o.harness.clone(), o.output.clone()));
                 }
                 calls.push(o);
+            }
+        }
+    }
+
+    // Stamp the substitution on the RESULT, not only in the prose. A caller that
+    // inspects `calls` — or a test that checks who answered — otherwise sees only
+    // the substitute and concludes the requested harness worked. That mistake
+    // briefly enabled nine harnesses that had never run.
+    if let Some(want) = requested_harness.as_deref().filter(|w| *w != "auto") {
+        for c in calls.iter_mut() {
+            if c.harness != want && c.fell_back_from.is_empty() {
+                c.fell_back_from = want.to_string();
             }
         }
     }

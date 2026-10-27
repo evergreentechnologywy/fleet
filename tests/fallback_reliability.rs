@@ -279,3 +279,39 @@ fn a_fan_out_gets_the_same_fallback_chain_as_a_serial_run() {
         "a fan-out is a unison with a floor on the harness count"
     );
 }
+
+#[test]
+fn a_substituted_harness_is_named_in_the_result_not_just_the_prose() {
+    if !have_fleet() {
+        return;
+    }
+    // The mistake this pins, measured 2026-10-27: a forced-harness run that
+    // falls back still produces the right ANSWER TEXT, so a check that only looks
+    // at the answer concludes the requested harness worked. It never ran. Nine
+    // harnesses were briefly enabled on exactly that error.
+    //
+    // `gemini` is installed but not runnable here, so the engine substitutes.
+    // The RESULT must carry the substitution, not only a stderr line that a
+    // quiet or structured caller never sees.
+    let opts = fleet::engine::RunOptions {
+        harness: Some("gemini".into()),
+        no_lessons: true,
+        dry: true,
+        ..Default::default()
+    };
+    let r = fleet::engine::run("Reply with exactly: PONG", &opts).expect("must not error out");
+
+    let answered = r.calls.iter().filter(|c| c.ok).collect::<Vec<_>>();
+    assert!(!answered.is_empty(), "a substitution must still answer");
+
+    for c in &answered {
+        if c.harness != "gemini" {
+            assert_eq!(
+                c.fell_back_from, "gemini",
+                "a call served by `{}` must record that `gemini` was asked for, \
+                 or a caller cannot tell the requested harness never ran",
+                c.harness
+            );
+        }
+    }
+}
