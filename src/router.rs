@@ -394,6 +394,28 @@ impl Router {
         // list, or one containing "*", constrains nothing by definition and must
         // not be reported as if it did.
         let clamps = harness.models.iter().any(|m| crate::registry::is_model_field(m));
+        // A harness that declares ONLY router aliases is telling us what it wants
+        // to RECEIVE, not what it can serve: `route = "jev"` with
+        // `models = ["jev/auto"]` reaches the chooser's door, and the door
+        // resolves the real model itself. Handing it the chooser's concrete pick
+        // instead bypasses the very indirection it was built for — measured
+        // 2026-10-27, `omp` then received `muse-spark-1.3-contributor` and got
+        // HTTP 403 "access has been restricted", while the alias answered fine.
+        if !clamps && !d.model.is_empty() {
+            if let Some(alias) = harness
+                .models
+                .iter()
+                .find(|m| m.as_str() == "jev/auto" || m.as_str() == "auto")
+            {
+                if d.model != *alias {
+                    d.reason = format!(
+                        "{}; `{}` self-routes through the chooser door, handing it `{}`",
+                        d.reason, harness.name, alias
+                    );
+                    d.model = alias.clone();
+                }
+            }
+        }
         if clamps && !d.model.is_empty() && !harness.accepts(&d.model) {
             let fallback = harness
                 .effective_model()
