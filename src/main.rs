@@ -8,6 +8,7 @@ use fleet::*;
 
 mod cmd;
 mod cmd2;
+mod tui;
 
 use cmd as c1;
 use cmd2 as c2;
@@ -35,6 +36,12 @@ struct Cli {
 enum Command {
     /// Run a task across one or more harnesses.
     Run(RunArgs),
+
+    /// Interactive terminal session: a REPL over the engine.
+    ///
+    /// The replacement for an `omp` TUI session — same conversation, same
+    /// harnesses, resumable from anywhere over ssh or tmux.
+    Tui(TuiArgs),
 
     /// Manage harnesses: the files ARE the registration.
     #[command(subcommand)]
@@ -125,6 +132,25 @@ enum Command {
 
     /// Where everything lives.
     Paths,
+}
+
+#[derive(Args, Debug)]
+pub struct TuiArgs {
+    /// Resume a session by id, or `last` for the most recent one.
+    #[arg(long, short = 'r')]
+    pub resume: Option<String>,
+
+    /// Start pinned to one harness. `auto` (the default) lets the planner choose.
+    #[arg(long, short = 'H', default_value = "auto")]
+    pub harness: String,
+
+    /// Start in direct-model mode: call this model with no agent CLI in between.
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Which provider serves `--model`.
+    #[arg(long)]
+    pub provider: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -888,6 +914,7 @@ fn real_main() -> Result<()> {
         }
         Some(Command::Onboard(a)) => c2::onboard(a, cli.json),
         Some(Command::Run(a)) => c1::run(a, cli.json),
+        Some(Command::Tui(a)) => tui::tui(a, cli.json),
         Some(Command::Harness(c)) => c1::harness(c, cli.json),
         Some(Command::Providers(c)) => c1::providers(c, cli.json),
         Some(Command::Plugins(c)) => c2::plugins(c, cli.json),
