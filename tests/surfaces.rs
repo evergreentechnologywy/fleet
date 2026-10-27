@@ -502,3 +502,45 @@ fn the_one_line_deploy_names_the_target_and_the_port() {
     };
     assert!(one_liner(&spec).contains("invalid target"));
 }
+
+#[test]
+fn append_commands_are_built_for_the_peers_own_shell() {
+    // A fleet is heterogeneous: a Windows desk answers ssh with cmd.exe, where
+    // none of the POSIX toolchain exists. The command is built for the shell we
+    // detected, never guessed at run time — `command -v` does not exist in
+    // cmd.exe, so a detecting one-liner is exactly what breaks.
+    use fleet::mesh::{append_command, Shell};
+
+    let posix = append_command(Shell::Posix, "YWJj");
+    assert!(
+        posix.contains("base64 -d"),
+        "POSIX decodes with base64: {posix}"
+    );
+    assert!(posix.contains("$HOME"), "POSIX writes under $HOME: {posix}");
+    assert!(
+        !posix.contains("certutil") && !posix.contains("%USERPROFILE%"),
+        "no Windows toolchain leaks in: {posix}"
+    );
+    assert!(
+        !posix.contains("command -v"),
+        "no run-time toolchain detection: {posix}"
+    );
+
+    let win = append_command(Shell::Windows, "YWJj");
+    assert!(
+        win.contains("certutil"),
+        "Windows decodes with certutil: {win}"
+    );
+    assert!(
+        win.contains("%USERPROFILE%"),
+        "Windows writes under the profile: {win}"
+    );
+    assert!(
+        !win.contains("$HOME") && !win.contains("base64 -d"),
+        "no POSIX toolchain leaks in: {win}"
+    );
+    assert!(
+        !win.contains("command -v"),
+        "cmd.exe has no `command -v`, so it must not appear: {win}"
+    );
+}
