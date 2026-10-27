@@ -63,6 +63,14 @@ enum Command {
     #[command(subcommand)]
     Sessions(SessionsCmd),
 
+    /// The durable work queue: enqueue tasks, drain them, inspect outcomes.
+    ///
+    /// A queue is what makes a burst survivable. `fleet run` blocks until the
+    /// answer exists; `fleet queue add` returns an id immediately and the work
+    /// outlives the shell that submitted it.
+    #[command(subcommand)]
+    Queue(QueueCmd),
+
     /// Shared memory: durable, last-version-wins, with full history.
     #[command(subcommand)]
     Memory(MemoryCmd),
@@ -414,6 +422,41 @@ enum SessionsCmd {
         #[arg(long, default_value_t = 20)]
         turns: i64,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum QueueCmd {
+    /// Enqueue a task and print its id.
+    Add {
+        task: Vec<String>,
+        /// Force one harness for this item. `auto` lets the planner decide.
+        #[arg(long, short = 'H', default_value = "auto")]
+        harness: String,
+        /// Fan this item out to N harnesses in parallel.
+        #[arg(long, default_value_t = 0)]
+        subagents: usize,
+    },
+    /// Show the queue: counts, or the most recent items.
+    List {
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+        /// Only items in this status: pending, running, done, failed.
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// One item in full, including its answer.
+    Show { id: i64 },
+    /// Run pending items until the queue is empty. `--follow` keeps waiting.
+    Work {
+        /// Keep polling after the queue empties, instead of exiting.
+        #[arg(long)]
+        follow: bool,
+        /// Seconds between polls when following an empty queue.
+        #[arg(long, default_value_t = 5)]
+        interval: u64,
+    },
+    /// Put items stranded in `running` back to `pending`.
+    Reap,
 }
 
 #[derive(Subcommand, Debug)]
@@ -933,6 +976,7 @@ fn real_main() -> Result<()> {
         Some(Command::Plugins(c)) => c2::plugins(c, cli.json),
         Some(Command::Peers(c)) => c2::peers(c, cli.json),
         Some(Command::Sessions(c)) => c2::sessions(c, cli.json),
+        Some(Command::Queue(c)) => c2::queue(c, cli.json),
         Some(Command::Memory(c)) => c2::memory(c, cli.json),
         Some(Command::Selfmod(c)) => c2::selfmod(c, cli.json),
         Some(Command::Lessons(c)) => c2::lessons(c, cli.json),

@@ -396,6 +396,7 @@ fn command(r: &mut Repl, line: &str) -> bool {
   /resume <id|last>      continue a session
   /harnesses             which harnesses are enabled
   /doctor                drift between declared, installed, and present
+  /queue [add|show|reap]  the durable work queue
   /memory <key> [value]  read or write shared memory
   /clear                 clear the screen
   /exit, /quit           leave (Ctrl-D also works)
@@ -526,6 +527,73 @@ fn command(r: &mut Repl, line: &str) -> bool {
                 for f in &report.findings {
                     println!("  {:?} {} — {}", f.severity, f.code, f.summary);
                 }
+            }
+            true
+        }
+        "/queue" => {
+            // Subcommands mirror `fleet queue`, so the REPL never invents a
+            // second vocabulary for the same thing.
+            let (sub, rest) = match arg.split_once(char::is_whitespace) {
+                Some((s, r)) => (s, r.trim()),
+                None => (arg, ""),
+            };
+            match fleet::memory::Memory::open_default() {
+                Ok(m) => match sub {
+                    "" | "list" => match m.queue_counts() {
+                        Ok(cs) if !cs.is_empty() => {
+                            let parts: Vec<String> =
+                                cs.iter().map(|(s, n)| format!("{n} {s}")).collect();
+                            println!("  {}", parts.join(" · "));
+                            match m.queue_list(10) {
+                                Ok(rows) => {
+                                    for q in rows {
+                                        println!(
+                                            "  {:<5} {:<8} {}",
+                                            q.id,
+                                            q.status,
+                                            fleet::runner::truncate(&q.task, 60)
+                                        );
+                                    }
+                                }
+                                Err(e) => println!("  {e}"),
+                            }
+                        }
+                        Ok(_) => println!("  the queue is empty"),
+                        Err(e) => println!("  {e}"),
+                    },
+                    "add" => {
+                        if rest.is_empty() {
+                            println!("  usage: /queue add <task>");
+                        } else {
+                            match m.queue_push(rest, &r.harness, 0) {
+                                Ok(id) => println!("  queued {id}"),
+                                Err(e) => println!("  {e}"),
+                            }
+                        }
+                    }
+                    "show" => match rest.parse::<i64>() {
+                        Ok(id) => match m.queue_get(id) {
+                            Ok(Some(q)) => {
+                                println!("  {:<8} {}", q.status, q.task);
+                                if !q.answer.is_empty() {
+                                    println!("{}", q.answer);
+                                }
+                                if !q.error.is_empty() {
+                                    println!("  error: {}", q.error);
+                                }
+                            }
+                            Ok(None) => println!("  no item {id}"),
+                            Err(e) => println!("  {e}"),
+                        },
+                        Err(_) => println!("  usage: /queue show <id>"),
+                    },
+                    "reap" => match m.queue_reap() {
+                        Ok(n) => println!("  re-queued {n}"),
+                        Err(e) => println!("  {e}"),
+                    },
+                    other => println!("  unknown: /queue {other} (list|add|show|reap)"),
+                },
+                Err(e) => println!("  {e}"),
             }
             true
         }

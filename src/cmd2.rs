@@ -2524,3 +2524,156 @@ pub fn computer(c: ComputerCmd, json: bool) -> Result<()> {
         }
     }
 }
+
+// ---------------------------------------------------------------- queue
+
+/// The durable work queue.
+///
+/// `add` returns an id immediately; `work` drains. That split is the whole point:
+/// a shell that submits a burst of tasks should not have to stay alive for all of
+/// them, and a process that dies mid-run should not lose the queue.
+pub fn queue(c: crate::QueueCmd, json: bool) -> Result<()> {
+    use crate::QueueCmd;
+    let mem = Memory::open_default()?;
+    match c {
+        QueueCmd::Add {
+            task,
+            harness,
+            subagents,
+        } => {
+            let task = task.join(" ");
+            if task.trim().is_empty() {
+                bail!("give me a task: fleet queue add \"<task>\"");
+            }
+            let id = mem.queue_push(&task, &harness, subagents)?;
+            if json {
+                println!("{}", serde_json::json!({"id": id, "status": "pending"}));
+            } else {
+                println!("  queued {id}");
+            }
+            Ok(())
+        }
+        QueueCmd::List { limit, status } => {
+            let mut rows = mem.queue_list(limit)?;
+            if let Some(want) = &status {
+                rows.retain(|r| &r.status == want);
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
+            if rows.is_empty() {
+                println!("  the queue is empty");
+                return Ok(());
+            }
+            for r in rows {
+                println!(
+                    "  {:<5} {:<8} {:<12} {:<6} {}",
+                    r.id,
+                    r.status,
+                    r.harness,
+                    if r.subagents > 0 {
+                        format!("×{}", r.subagents)
+                    } else {
+                        "-".to_string()
+                    },
+                    fleet::runner::truncate(&r.task, 60)
+                );
+            }
+            Ok(())
+        }
+        QueueCmd::Show { id } => {
+            let Some(r) = mem.queue_get(id)? else {
+                bail!("no queue item {id}");
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+                return Ok(());
+            }
+            println!("  id       {}", r.id);
+            println!("  status   {}", r.status);
+            println!("  harness  {}", r.harness);
+            println!("  created  {}", r.created);
+            if !r.session.is_empty() {
+                println!("  session  {}", r.session);
+            }
+            println!("  task     {}", r.task);
+            if !r.error.is_empty() {
+                println!("  error    {}", r.error);
+            }
+            if !r.answer.is_empty() {
+                println!();
+                println!("{}", r.answer);
+            }
+            Ok(())
+        }
+        QueueCmd::Work { follow, interval } => {
+            // Reap first: an item stranded in `running` by a previous crash is
+            // work that was lost, not work that is in progress.
+            let reaped = mem.queue_reap()?;
+            if reaped > 0 {
+                eprintln!("fleet: re-queued {reaped} item(s) stranded in `running`");
+            }
+            let mut idle = 0u32;
+            loop {
+                match mem.queue_claim()? {
+                    Some(item) => {
+                        idle = 0;
+                        eprintln!(
+                            "fleet: [{}] {}",
+                            item.id,
+                            fleet::runner::truncate(&item.task, 70)
+                        );
+                        let opts = fleet::engine::RunOptions {
+                            harness: Some(item.harness.clone()),
+                            subagents: item.subagents,
+                            depth: fleet::engine::depth_from_env(),
+                            ..Default::default()
+                        };
+                        match fleet::engine::run(&item.task, &opts) {
+                            Ok(res) => {
+                                mem.queue_finish(item.id, &res.session, &res.answer, "")?;
+                                eprintln!(
+                                    "fleet: [{}] done · {} call(s) · {}ms",
+                                    item.id,
+                                    res.calls.len(),
+                                    res.ms
+                                );
+                            }
+                            Err(e) => {
+                                let msg = format!("{e}");
+                                mem.queue_finish(item.id, "", "", &msg)?;
+                                eprintln!("fleet: [{}] failed: {msg}", item.id);
+                            }
+                        }
+                    }
+                    None => {
+                        if !follow {
+                            let counts = mem.queue_counts()?;
+                            let pending = counts
+                                .iter()
+                                .find(|(s, _)| s == "pending")
+                                .map(|(_, n)| *n)
+                                .unwrap_or(0);
+                            if pending == 0 {
+                                println!("  queue drained");
+                                return Ok(());
+                            }
+                            continue;
+                        }
+                        idle += 1;
+                        std::thread::sleep(std::time::Duration::from_secs(interval));
+                        if idle % 12 == 0 {
+                            eprintln!("fleet: queue idle, still following");
+                        }
+                    }
+                }
+            }
+        }
+        QueueCmd::Reap => {
+            let n = mem.queue_reap()?;
+            println!("  re-queued {n} item(s)");
+            Ok(())
+        }
+    }
+}

@@ -45,6 +45,20 @@ pub struct Session {
     pub turns: i64,
 }
 
+/// One item in the durable work queue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Queued {
+    pub id: i64,
+    pub task: String,
+    pub harness: String,
+    pub subagents: usize,
+    pub status: String,
+    pub created: String,
+    pub session: String,
+    pub answer: String,
+    pub error: String,
+}
+
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=FULL;
@@ -105,6 +119,24 @@ CREATE TABLE IF NOT EXISTS run (
   detail     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_run_session ON run(session, started DESC);
+
+-- A durable work queue. It exists because a task that is worth running is worth
+-- surviving a restart: an in-memory Vec loses the queue when the process exits,
+-- and the point of queueing is to absorb a burst rather than to hold it briefly.
+CREATE TABLE IF NOT EXISTS queue (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task       TEXT NOT NULL,
+  harness    TEXT NOT NULL DEFAULT 'auto',
+  subagents  INTEGER NOT NULL DEFAULT 0,
+  status     TEXT NOT NULL DEFAULT 'pending',
+  created    TEXT NOT NULL,
+  started    TEXT,
+  finished   TEXT,
+  session    TEXT NOT NULL DEFAULT '',
+  answer     TEXT NOT NULL DEFAULT '',
+  error      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status, id);
 "#;
 
 impl Memory {
@@ -247,6 +279,136 @@ impl Memory {
         Ok(())
     }
 
+    // ---------------------------------------------------------------- queue
+
+    /// Enqueue a task and return its id.
+    pub fn queue_push(&self, task: &str, harness: &str, subagents: usize) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO queue(task, harness, subagents, status, created)
+             VALUES(?1, ?2, ?3, 'pending', ?4)",
+            params![task, harness, subagents as i64, crate::now()],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Claim the oldest pending item, marking it running.
+    ///
+    /// `UPDATE ... RETURNING` in one statement, not SELECT-then-UPDATE: two
+    /// workers polling the same queue would otherwise both read the same row and
+    /// run it twice, and the duplicate would look like a scheduling mystery
+    /// rather than a race.
+    pub fn queue_claim(&self) -> Result<Option<Queued>> {
+        let row = self
+            .conn
+            .query_row(
+                "UPDATE queue SET status='running', started=?1
+                 WHERE id = (SELECT id FROM queue WHERE status='pending' ORDER BY id LIMIT 1)
+                 RETURNING id, task, harness, subagents, status, created",
+                params![crate::now()],
+                |r| {
+                    Ok(Queued {
+                        id: r.get(0)?,
+                        task: r.get(1)?,
+                        harness: r.get(2)?,
+                        subagents: r.get::<_, i64>(3)? as usize,
+                        status: r.get(4)?,
+                        created: r.get(5)?,
+                        session: String::new(),
+                        answer: String::new(),
+                        error: String::new(),
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Record the outcome of a claimed item.
+    pub fn queue_finish(
+        &self,
+        id: i64,
+        session: &str,
+        answer: &str,
+        error: &str,
+    ) -> Result<()> {
+        let status = if error.is_empty() { "done" } else { "failed" };
+        self.conn.execute(
+            "UPDATE queue SET status=?1, finished=?2, session=?3, answer=?4, error=?5
+             WHERE id=?6",
+            params![status, crate::now(), session, answer, error, id],
+        )?;
+        Ok(())
+    }
+
+    /// Re-queue items left `running` by a process that died.
+    ///
+    /// Without this a crash mid-run strands its item in `running` forever: the
+    /// queue looks non-empty but nothing is pending, so it silently stops.
+    pub fn queue_reap(&self) -> Result<usize> {
+        let n = self.conn.execute(
+            "UPDATE queue SET status='pending', started=NULL WHERE status='running'",
+            [],
+        )?;
+        Ok(n)
+    }
+
+    pub fn queue_list(&self, limit: i64) -> Result<Vec<Queued>> {
+        let mut st = self.conn.prepare(
+            "SELECT id, task, harness, subagents, status, created, session, answer, error
+             FROM queue ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = st
+            .query_map(params![limit], |r| {
+                Ok(Queued {
+                    id: r.get(0)?,
+                    task: r.get(1)?,
+                    harness: r.get(2)?,
+                    subagents: r.get::<_, i64>(3)? as usize,
+                    status: r.get(4)?,
+                    created: r.get(5)?,
+                    session: r.get(6)?,
+                    answer: r.get(7)?,
+                    error: r.get(8)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn queue_get(&self, id: i64) -> Result<Option<Queued>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, task, harness, subagents, status, created, session, answer, error
+                 FROM queue WHERE id=?1",
+                params![id],
+                |r| {
+                    Ok(Queued {
+                        id: r.get(0)?,
+                        task: r.get(1)?,
+                        harness: r.get(2)?,
+                        subagents: r.get::<_, i64>(3)? as usize,
+                        status: r.get(4)?,
+                        created: r.get(5)?,
+                        session: r.get(6)?,
+                        answer: r.get(7)?,
+                        error: r.get(8)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Counts per status, for `fleet queue` with no arguments.
+    pub fn queue_counts(&self) -> Result<Vec<(String, i64)>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT status, COUNT(*) FROM queue GROUP BY status ORDER BY status")?;
+        let rows = st
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
     pub fn sessions(&self, limit: i64) -> Result<Vec<Session>> {
         let mut st = self.conn.prepare(
             "SELECT s.id, s.title, s.created, s.updated, s.status,
