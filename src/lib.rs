@@ -24,7 +24,12 @@
 //! * [`webapp`] — a single embedded page that drives that API.
 
 pub mod api;
+pub mod catalog;
 pub mod config;
+pub mod doctor;
+pub mod keys;
+pub mod memory_backend;
+pub mod memory_share;
 pub mod credential;
 pub mod deploy;
 pub mod deploy_targets;

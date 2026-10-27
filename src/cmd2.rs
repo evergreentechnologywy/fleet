@@ -7,8 +7,9 @@ use fleet::ledger::Ledger;
 use fleet::memory::Memory;
 
 use crate::{
-    ConfigCmd, CredentialCmd, TargetsCmd, DeployArgs, LedgerArgs, LessonsCmd, MemoryCmd, OnboardArgs, PeersCmd, PluginsCmd,
-    SelfmodCmd, SessionsCmd,
+    CatalogCmd, ConfigCmd, CredentialCmd, DeployArgs, DoctorArgs, KeysCmd, LedgerArgs,
+    LessonsCmd, MemoryCmd, OnboardArgs, PeersCmd, PluginsCmd, RunnersCmd, SelfmodCmd,
+    SessionsCmd, TargetsCmd,
 };
 
 // ---------------------------------------------------------------- plugins
@@ -353,7 +354,17 @@ pub fn memory(c: MemoryCmd, json: bool) -> Result<()> {
             Ok(())
         }
         MemoryCmd::Get { key, scope } => {
-            match mem.get(&scope, &key)? {
+            // Local first (instant, no network), then the hub — so a key written
+            // on another node is visible here with no sync step. A hit from the
+            // hub is cached locally, so the next read costs nothing.
+            let mut found = mem.get(&scope, &key)?;
+            if found.is_none() {
+                if let Ok(Some(v)) = fleet::memory_share::fetch(&scope, &key) {
+                    let _ = mem.put(&scope, &key, &v, "hub-mirror");
+                    found = Some(v);
+                }
+            }
+            match found {
                 Some(v) => println!("{v}"),
                 None => {
                     if json {
@@ -368,8 +379,23 @@ pub fn memory(c: MemoryCmd, json: bool) -> Result<()> {
         }
         MemoryCmd::Put { key, value, scope } => {
             let v = value.join(" ");
+            // Local first: a hub that is down costs fleet-wide visibility, never
+            // this node's durability. Then mirror, and say plainly whether the
+            // write is fleet-wide or only here.
             let version = mem.put(&scope, &key, &v, "cli")?;
-            println!("{scope}/{key} v{version} — durable now");
+            let (hub, reachable, detail) = fleet::memory_share::hub_status();
+            match hub {
+                None => println!("{scope}/{key} v{version} — durable here (no hub configured)"),
+                Some(_) if !reachable => {
+                    println!("{scope}/{key} v{version} — durable here; NOT shared ({detail})")
+                }
+                Some(_) => match fleet::memory_share::push(&scope, &key, &v, "cli") {
+                    Ok(()) => println!("{scope}/{key} v{version} — durable and shared"),
+                    Err(e) => {
+                        println!("{scope}/{key} v{version} — durable here; mirror failed: {e}")
+                    }
+                },
+            }
             Ok(())
         }
         MemoryCmd::Search { needle, limit } => {
@@ -403,6 +429,42 @@ pub fn memory(c: MemoryCmd, json: bool) -> Result<()> {
                 );
             }
             Ok(())
+        }
+        MemoryCmd::Backend { name, path, url } => {
+            let (active, cfg) = fleet::memory_backend::active();
+            match name {
+                None => {
+                    println!("active backend: {active}");
+                    println!("  path: {}", fleet::memory_backend::active_path());
+                    if let Some(u) = &cfg.memory.url {
+                        println!("  url:  {u}");
+                    }
+                    println!();
+                    println!("available:");
+                    for b in fleet::memory_backend::backends() {
+                        println!(
+                            "  {:<12} {:<12} {}",
+                            b.name,
+                            if b.available { "available" } else { "unavailable" },
+                            b.description
+                        );
+                        println!("  {:<12} {}", "", b.trade);
+                    }
+                    println!();
+                    println!("switch:  fleet memory backend <name> [--path P] [--url U]");
+                    Ok(())
+                }
+                Some(n) => {
+                    fleet::memory_backend::set(&n, path.as_deref(), url.as_deref())?;
+                    println!(
+                        "memory backend set to `{n}` in {}",
+                        fleet::paths::config_path().display()
+                    );
+                    println!("note: the engine's own SQLite store keeps every transcript, so a switch");
+                    println!("      never orphans a session; it changes where NEW shared state goes.");
+                    Ok(())
+                }
+            }
         }
     }
 }
@@ -1107,5 +1169,631 @@ fn provider_filter(c: &CredentialCmd) -> Option<String> {
         CredentialCmd::Check { provider }
         | CredentialCmd::Refresh { provider } => provider.clone(),
         CredentialCmd::Show { provider, .. } => Some(provider.clone()),
+    }
+}
+
+// ---------------------------------------------------------------- catalog
+
+/// The catalog: what the fleet can detect, install, and wire.
+///
+/// Everything here is read from `$FLEET_HOME/catalog/`, so an entry added as a
+/// file shows up immediately and `--present` answers the only question that
+/// matters on a new machine: what is already here that the fleet is not using?
+pub fn catalog(c: CatalogCmd, json: bool) -> Result<()> {
+    use fleet::catalog::{self, Kind};
+
+    let cat = catalog::Catalog::default_dir();
+    match c {
+        CatalogCmd::Dir => {
+            println!("{}", cat.dir().display());
+            println!();
+            println!("One directory per entry, each with a catalog.toml:");
+            println!("  catalog.toml   kind, description, detect, install, keys, docs");
+            println!("  harness.toml   copied to harnesses/ on `fleet catalog install`");
+            println!("  plugin/        copied to plugins/ on `fleet catalog install`");
+            println!("  target/        copied to deploy-targets/ on `fleet catalog install`");
+            println!("  provider.toml  appended to providers.toml on install");
+            println!();
+            println!("The directory is re-read on every call, so an entry needs no restart.");
+            Ok(())
+        }
+
+        CatalogCmd::New { name, kind } => {
+            let dir = cat.dir().join(&name);
+            if dir.exists() {
+                anyhow::bail!("{} already exists", dir.display());
+            }
+            std::fs::create_dir_all(&dir)?;
+            let k = match kind.as_str() {
+                "plugin" => Kind::Plugin,
+                "provider" => Kind::Provider,
+                "target" => Kind::Target,
+                "runner" => Kind::Runner,
+                "memory" => Kind::Memory,
+                "integration" => Kind::Integration,
+                _ => Kind::Harness,
+            };
+            let kind_name = match k {
+                Kind::Harness => "harness",
+                Kind::Plugin => "plugin",
+                Kind::Provider => "provider",
+                Kind::Target => "target",
+                Kind::Runner => "runner",
+                Kind::Memory => "memory",
+                Kind::Integration => "integration",
+            };
+            let body = format!(
+                "# {name} — edit me. Every field here is data the engine reads.\n\
+                 name = \"{name}\"\n\
+                 kind = \"{kind_name}\"\n\
+                 description = \"What this is, in one line.\"\n\
+                 tags = [\"code\"]\n\
+                 docs = \"https://example.com\"\n\
+                 keys = [\"SOME_API_KEY\"]\n\
+                 \n\
+                 # How to tell whether it is already on the machine. The first\n\
+                 # rule that is set wins: command, then path, then env, then http.\n\
+                 [detect]\n\
+                 command = \"{name}\"\n\
+                 \n\
+                 # How to install the upstream tool. Use the package name only;\n\
+                 # the engine builds the command.\n\
+                 [install]\n\
+                 npm = \"{name}\"\n\
+                 npm_global = true\n"
+            );
+            std::fs::write(dir.join("catalog.toml"), body)?;
+            println!("wrote {}", dir.join("catalog.toml").display());
+            if k == Kind::Harness {
+                let h = format!(
+                    "name = \"{name}\"\ndescription = \"\"\nkind = \"cli\"\n\n\
+                     command = \"{name}\"\nargs = [\"{{prompt}}\"]\nroute = \"jev\"\n\
+                     models = [\"*\"]\ntags = [\"code\"]\npriority = 50\nenabled = true\n"
+                );
+                std::fs::write(dir.join("harness.toml"), h)?;
+                println!("wrote {}", dir.join("harness.toml").display());
+            }
+            println!();
+            println!("Then: fleet catalog list --present && fleet catalog install {name}");
+            Ok(())
+        }
+
+        CatalogCmd::List {
+            present,
+            absent,
+            kind,
+            search,
+        } => {
+            let (found, errors) = cat.discover();
+            let want_kind = kind.map(|k| k.to_lowercase());
+            let needle = search.map(|s| s.to_lowercase());
+            let rows: Vec<_> = found
+                .iter()
+                .filter(|d| !present || d.present)
+                .filter(|d| !absent || !d.present)
+                .filter(|d| {
+                    want_kind
+                        .as_ref()
+                        .map(|k| format!("{:?}", d.entry.kind).to_lowercase() == *k)
+                        .unwrap_or(true)
+                })
+                .filter(|d| {
+                    needle
+                        .as_ref()
+                        .map(|n| {
+                            d.entry.name.to_lowercase().contains(n)
+                                || d.entry.description.to_lowercase().contains(n)
+                                || d.entry.tags.iter().any(|t| t.to_lowercase().contains(n))
+                        })
+                        .unwrap_or(true)
+                })
+                .collect();
+
+            if json {
+                let v: Vec<_> = rows
+                    .iter()
+                    .map(|d| {
+                        serde_json::json!({
+                            "name": d.entry.name,
+                            "kind": format!("{:?}", d.entry.kind).to_lowercase(),
+                            "description": d.entry.description,
+                            "tags": d.entry.tags,
+                            "present": d.present,
+                            "installed": d.installed,
+                            "evidence": d.evidence,
+                            "keys_present": d.keys_present,
+                            "keys_missing": d.keys_missing,
+                            "install": catalog::install_command(&d.entry),
+                            "docs": d.entry.docs,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+
+            if rows.is_empty() {
+                println!("(no entries match)");
+                println!("catalog: {}", cat.dir().display());
+                return Ok(());
+            }
+            let mut last_kind = String::new();
+            for d in &rows {
+                let k = format!("{:?}", d.entry.kind).to_lowercase();
+                if k != last_kind {
+                    println!("\n{k}:");
+                    last_kind = k;
+                }
+                let state = match (d.present, d.installed) {
+                    (true, true) => "wired",
+                    (true, false) => "PRESENT, unwired",
+                    (false, true) => "WIRED, absent",
+                    (false, false) => "absent",
+                };
+                println!("  {:<16} {:<18} {}", d.entry.name, state, d.entry.description);
+                if d.present && !d.evidence.is_empty() {
+                    println!("  {:<16} {}", "", d.evidence);
+                }
+                if !d.keys_missing.is_empty() {
+                    println!("  {:<16} needs: {}", "", d.keys_missing.join(", "));
+                }
+            }
+            let wired = rows.iter().filter(|d| d.installed).count();
+            let ready = rows.iter().filter(|d| d.present && !d.installed).count();
+            println!(
+                "\n{} entries · {wired} wired · {ready} present but unwired",
+                rows.len()
+            );
+            if ready > 0 {
+                println!("wire them:  fleet catalog install --all");
+            }
+            for (p, e) in errors {
+                println!("  !! {}: {e}", p.display());
+            }
+            Ok(())
+        }
+
+        CatalogCmd::Show { name } => {
+            let Some((entry, dir)) = cat.get(&name) else {
+                anyhow::bail!("no catalog entry named `{name}` in {}", cat.dir().display());
+            };
+            let (present, evidence) = catalog::detect(&entry);
+            let installed = catalog::is_installed(&entry, &dir);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "entry": entry,
+                        "dir": dir,
+                        "present": present,
+                        "evidence": evidence,
+                        "installed": installed,
+                        "install_command": catalog::install_command(&entry),
+                    }))?
+                );
+                return Ok(());
+            }
+            println!("{}  ({:?})", entry.name, entry.kind);
+            println!("  {}", entry.description);
+            if !entry.tags.is_empty() {
+                println!("  tags:  {}", entry.tags.join(", "));
+            }
+            if let Some(d) = &entry.docs {
+                println!("  docs:  {d}");
+            }
+            println!("  dir:   {}", dir.display());
+            println!(
+                "  state: {} / {}",
+                if present { "present" } else { "absent" },
+                if installed { "wired" } else { "unwired" }
+            );
+            println!("  check: {evidence}");
+            match catalog::install_command(&entry) {
+                Some(cmd) => println!("  upstream: {}", cmd.join(" ")),
+                None => match &entry.install.url {
+                    Some(u) => println!("  upstream: manual — {u}"),
+                    None => println!("  upstream: nothing to install"),
+                },
+            }
+            if !entry.keys.is_empty() {
+                println!("  keys:");
+                for k in &entry.keys {
+                    let have = std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
+                    println!("    {} {k}", if have { "ok  " } else { "MISS" });
+                }
+            }
+            if !entry.notes.is_empty() {
+                println!("  notes: {}", entry.notes);
+            }
+            Ok(())
+        }
+
+        CatalogCmd::Install {
+            name,
+            all,
+            upstream,
+            dry_run,
+        } => {
+            let targets: Vec<(fleet::catalog::Entry, std::path::PathBuf)> = if all {
+                let (found, _) = cat.discover();
+                found
+                    .into_iter()
+                    .filter(|d| d.present && !d.installed)
+                    .map(|d| (d.entry, d.dir))
+                    .collect()
+            } else {
+                let Some(n) = name else {
+                    anyhow::bail!("name an entry, or pass --all");
+                };
+                match cat.get(&n) {
+                    Some(x) => vec![x],
+                    None => anyhow::bail!("no catalog entry named `{n}`"),
+                }
+            };
+            if targets.is_empty() {
+                println!("nothing to install (everything present is already wired)");
+                return Ok(());
+            }
+            for (entry, dir) in targets {
+                if upstream {
+                    if let Some(cmd) = catalog::install_command(&entry) {
+                        if dry_run {
+                            println!("would run: {}", cmd.join(" "));
+                        } else {
+                            println!("running: {}", cmd.join(" "));
+                            let (prog, args) = cmd.split_first().expect("non-empty");
+                            let out = fleet::runner::run_capture(
+                                prog,
+                                args,
+                                &[],
+                                None,
+                                std::time::Duration::from_secs(600),
+                            )?;
+                            if !out.ok {
+                                eprintln!(
+                                    "  upstream install failed: {}",
+                                    fleet::runner::truncate(out.stderr.trim(), 400)
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                }
+                if dry_run {
+                    println!("would wire {} from {}", entry.name, dir.display());
+                    continue;
+                }
+                match catalog::install_artifact(&entry, &dir) {
+                    Ok(paths) => println!(
+                        "wired {} -> {}",
+                        entry.name,
+                        paths
+                            .iter()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    Err(e) => eprintln!("could not wire {}: {e}", entry.name),
+                }
+            }
+            Ok(())
+        }
+
+        CatalogCmd::Upstream { name, dry_run } => {
+            let Some((entry, _)) = cat.get(&name) else {
+                anyhow::bail!("no catalog entry named `{name}`");
+            };
+            let Some(cmd) = catalog::install_command(&entry) else {
+                match &entry.install.url {
+                    Some(u) => println!("{name} has no automated install; see {u}"),
+                    None => println!("{name} has nothing to install upstream"),
+                }
+                return Ok(());
+            };
+            if dry_run {
+                println!("{}", cmd.join(" "));
+                return Ok(());
+            }
+            let (prog, args) = cmd.split_first().expect("non-empty");
+            let out = fleet::runner::run_capture(
+                prog,
+                args,
+                &[],
+                None,
+                std::time::Duration::from_secs(900),
+            )?;
+            print!("{}", out.stdout);
+            if !out.ok {
+                eprint!("{}", out.stderr);
+                anyhow::bail!("install failed for `{name}`");
+            }
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------- doctor
+
+/// Drift, and the repairs that are safe to make automatically.
+pub fn doctor(a: DoctorArgs) -> Result<()> {
+    let report = fleet::doctor::check();
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        if report.findings.is_empty() {
+            println!("no findings — declared, installed, and present agree");
+        }
+        for f in &report.findings {
+            let tag = match f.severity {
+                fleet::doctor::Severity::Problem => "PROBLEM",
+                fleet::doctor::Severity::Suggestion => "suggest",
+                fleet::doctor::Severity::Info => "info   ",
+            };
+            println!("{tag} {}: {}", f.code, f.summary);
+            if !f.evidence.is_empty() {
+                println!("        {}", f.evidence);
+            }
+            if let Some(fix) = &f.fix {
+                println!("        fix: {fix}");
+            }
+        }
+        println!(
+            "\n{} problem(s), {} suggestion(s){}",
+            report.problems,
+            report.suggestions,
+            if report.ok { " — ok" } else { "" }
+        );
+    }
+    if a.check {
+        return Ok(());
+    }
+    let log = fleet::doctor::heal(a.dry_run)?;
+    if log.is_empty() {
+        println!("nothing to heal");
+    } else {
+        for line in log {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- keys
+
+/// The key inventory. Values are never printed; only names, sources, and a
+/// fingerprint that is enough to tell two keys apart.
+pub fn keys(c: KeysCmd, json: bool) -> Result<()> {
+    match c {
+        KeysCmd::Show { group, missing } => {
+            let inv = fleet::keys::inventory();
+            let rows: Vec<_> = inv
+                .into_iter()
+                .filter(|k| {
+                    group
+                        .as_ref()
+                        .map(|g| k["group"].as_str() == Some(g.as_str()))
+                        .unwrap_or(true)
+                })
+                .filter(|k| !missing || k["present"] == serde_json::json!(false))
+                .collect();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
+            let mut last = String::new();
+            for k in &rows {
+                let g = k["group"].as_str().unwrap_or("");
+                if g != last {
+                    println!("\n{g}:");
+                    last = g.to_string();
+                }
+                let present = k["present"] == serde_json::json!(true);
+                let src = k["source"].as_str().unwrap_or("");
+                println!(
+                    "  {} {:<28} {}",
+                    if present { "ok  " } else { "MISS" },
+                    k["name"].as_str().unwrap_or(""),
+                    if present {
+                        src
+                    } else {
+                        k["purpose"].as_str().unwrap_or("")
+                    }
+                );
+            }
+            let have = rows
+                .iter()
+                .filter(|k| k["present"] == serde_json::json!(true))
+                .count();
+            println!("\n{} of {} shown are set", have, rows.len());
+            Ok(())
+        }
+        KeysCmd::Import {
+            names,
+            all,
+            dry_run,
+        } => {
+            let to_import: Vec<String> = if all {
+                fleet::keys::inventory()
+                    .into_iter()
+                    .filter(|k| k["present"] == serde_json::json!(true))
+                    .filter_map(|k| k["name"].as_str().map(|s| s.to_string()))
+                    .collect()
+            } else {
+                names
+            };
+            if to_import.is_empty() {
+                println!("nothing to import (name some keys, or pass --all)");
+                return Ok(());
+            }
+            if dry_run {
+                println!("would import {} key(s):", to_import.len());
+                for n in &to_import {
+                    println!("  {n}");
+                }
+                return Ok(());
+            }
+            let written = fleet::keys::import(&to_import)?;
+            println!(
+                "imported {} key(s) into {}",
+                written.len(),
+                fleet::paths::home().join("env").display()
+            );
+            for n in &written {
+                println!("  {n}");
+            }
+            Ok(())
+        }
+        KeysCmd::Unexpected => {
+            let found = fleet::keys::unexpected();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&found)?);
+                return Ok(());
+            }
+            println!("{} key(s) set that the fleet does not list:", found.len());
+            for f in &found {
+                println!("  {:<32} {} ({})", f.name, f.source, f.fingerprint);
+            }
+            println!();
+            println!("A key here is how a new integration usually starts: wrap it in a plugin,");
+            println!("then add a catalog entry so the next machine finds it automatically.");
+            Ok(())
+        }
+        KeysCmd::Sources => {
+            println!("keys are read in this order (first hit wins):");
+            println!("  1. the process environment");
+            for (i, p) in fleet::keys::env_files().iter().enumerate() {
+                let exists = if p.exists() { "exists" } else { "—" };
+                println!("  {}. {}  ({exists})", i + 2, p.display());
+            }
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------- runners
+
+/// Cloud VM runners: a machine you do not own, reachable through a deploy
+/// target. The catalog holds them, so adding one is a file.
+pub fn runners(c: RunnersCmd, json: bool) -> Result<()> {
+    use fleet::catalog::Kind;
+    let cat = fleet::catalog::Catalog::default_dir();
+    let (found, _) = cat.discover();
+    let runners: Vec<_> = found
+        .into_iter()
+        .filter(|d| d.entry.kind == Kind::Runner)
+        .collect();
+
+    match c {
+        RunnersCmd::List => {
+            if json {
+                let v: Vec<_> = runners
+                    .iter()
+                    .map(|d| {
+                        serde_json::json!({
+                            "name": d.entry.name,
+                            "description": d.entry.description,
+                            "present": d.present,
+                            "evidence": d.evidence,
+                            "keys_present": d.keys_present,
+                            "keys_missing": d.keys_missing,
+                            "docs": d.entry.docs,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            if runners.is_empty() {
+                println!("no runners in the catalog yet");
+                println!("catalog: {}", cat.dir().display());
+                return Ok(());
+            }
+            for d in &runners {
+                println!(
+                    "  {:<14} {:<8} {}",
+                    d.entry.name,
+                    if d.present { "ready" } else { "absent" },
+                    d.entry.description
+                );
+                if !d.keys_missing.is_empty() {
+                    println!("  {:<14} needs: {}", "", d.keys_missing.join(", "));
+                }
+            }
+            println!();
+            println!("run one:  fleet runners start <name>");
+            Ok(())
+        }
+        RunnersCmd::Show { name } => {
+            let Some(d) = runners.iter().find(|d| d.entry.name == name) else {
+                anyhow::bail!("no runner named `{name}` in the catalog");
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&d.entry)?);
+                return Ok(());
+            }
+            println!("{}  ({})", d.entry.name, d.evidence);
+            println!("  {}", d.entry.description);
+            if let Some(u) = &d.entry.docs {
+                println!("  docs: {u}");
+            }
+            if !d.entry.notes.is_empty() {
+                println!("  {}", d.entry.notes);
+            }
+            Ok(())
+        }
+        RunnersCmd::Start {
+            name,
+            label,
+            dry_run,
+        } => {
+            let Some(d) = runners.iter().find(|d| d.entry.name == name) else {
+                anyhow::bail!("no runner named `{name}` in the catalog");
+            };
+            // A runner is a deploy target plus the recipe for reaching it, so
+            // starting one is: read the recipe, then hand it to `deploy`.
+            let label = label.unwrap_or_else(|| format!("fleet-{}", fleet::short_id()));
+            if !d.keys_missing.is_empty() {
+                eprintln!(
+                    "warning: {} needs {} — the runner may refuse",
+                    name,
+                    d.keys_missing.join(", ")
+                );
+            }
+            let spec = d
+                .entry
+                .notes
+                .lines()
+                .find(|l| l.trim_start().starts_with("deploy:"))
+                .map(|l| l.trim_start().trim_start_matches("deploy:").trim().to_string());
+            match spec {
+                Some(s) => {
+                    let target = s.replace("{label}", &label);
+                    if dry_run {
+                        println!("would deploy to {target}");
+                        return Ok(());
+                    }
+                    println!("deploying to {target}");
+                    let args = fleet::deploy::DeploySpec {
+                        target,
+                        method: None,
+                        release: false,
+                        port: None,
+                        prefix: None,
+                        run: true,
+                    };
+                    for line in fleet::deploy::deploy(&args, false)? {
+                        println!("  {line}");
+                    }
+                    Ok(())
+                }
+                None => {
+                    println!(
+                        "{name} has no `deploy:` recipe in its catalog notes yet; see {}",
+                        d.entry.docs.as_deref().unwrap_or("its docs")
+                    );
+                    Ok(())
+                }
+            }
+        }
     }
 }

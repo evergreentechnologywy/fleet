@@ -25,6 +25,14 @@ pub fn harness_dir() -> PathBuf {
         .unwrap_or_else(|| sub("harnesses"))
 }
 
+/// The catalog: one directory per thing the fleet can detect and install.
+/// Re-read on every call, so adding an entry is writing files.
+pub fn catalog_dir() -> PathBuf {
+    std::env::var_os("FLEET_CATALOG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| sub("catalog"))
+}
+
 /// Directory of verifier packages used by the self-modification gate.
 pub fn verifier_dir() -> PathBuf {
     sub("verifiers")

@@ -180,6 +180,25 @@ pub struct Harness {
     #[serde(default = "default_enabled")]
     pub plugins: bool,
 
+    /// How many subagents this harness may spawn, and what they may be.
+    ///
+    /// A subagent is the SAME engine run, launched by the harness itself through
+    /// `fleet run` (the path is in `$FLEET_MEMORY_TOOL`). That matters: a
+    /// subagent inherits the chooser, the provider rules, the plugin path, and
+    /// shared memory, so delegating cannot escape fleet policy the way a
+    /// harness's own private sub-agent mechanism can.
+    ///
+    /// `0` means no delegation, which is the default because a harness that
+    /// spawns without a budget is how one task becomes twenty.
+    #[serde(default)]
+    pub subagents: usize,
+    /// Harnesses a subagent may be routed to. Empty means "any enabled one".
+    #[serde(default)]
+    pub subagent_harnesses: Vec<String>,
+    /// Hard ceiling on subagent depth, so delegation cannot recurse forever.
+    #[serde(default = "default_depth")]
+    pub subagent_depth: usize,
+
     /// Provenance: which file this came from. Filled by the registry.
     #[serde(skip)]
     pub source: Option<PathBuf>,
@@ -191,6 +210,12 @@ fn default_route() -> Route {
 
 fn default_enabled() -> bool {
     true
+}
+
+/// Delegation defaults to one level: enough for a real split, not enough to
+/// build a tree nobody can account for.
+fn default_depth() -> usize {
+    1
 }
 
 impl Harness {

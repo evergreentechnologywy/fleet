@@ -101,6 +101,7 @@ fn compose_prompt(
     lesson_ctx: &str,
     prior: &[(String, String)],
     prefix: Option<&str>,
+    delegation: &str,
 ) -> String {
     let mut p = String::new();
     if let Some(pre) = prefix {
@@ -135,10 +136,50 @@ fn compose_prompt(
         p.push_str(lesson_ctx);
         p.push('\n');
     }
+    if !delegation.is_empty() {
+        p.push_str("\n# Subagents\n");
+        p.push_str(delegation);
+        p.push('\n');
+    }
     p.push_str(
         "\n# How to answer\nAnswer the task directly. No preamble, no restating the task.\n",
     );
     p
+}
+
+/// The delegation contract, or an empty string when this harness may not spawn.
+///
+/// Delegation goes through `fleet run` rather than any private sub-agent
+/// mechanism, so a subagent inherits the chooser, the provider block rules, the
+/// plugin path, and shared memory. A harness that could spawn outside the engine
+/// would be a hole in fleet policy, which is why this is engine-provided text
+/// rather than something each CLI documents for itself.
+fn delegation_brief(h: &crate::registry::Harness, depth: usize) -> String {
+    if h.subagents == 0 || depth >= h.subagent_depth {
+        return String::new();
+    }
+    let tool = std::env::var("FLEET_MEMORY_TOOL")
+        .unwrap_or_else(|_| "${FLEET_HOME}/bin/fleet".into());
+    let mut s = String::new();
+    s.push_str(&format!(
+        "You may delegate parts of this task to at most {} subagent(s).\n\n",
+        h.subagents
+    ));
+    s.push_str(&format!("    {tool} run \"<subtask>\" -H <harness> -q\n\n"));
+    if !h.subagent_harnesses.is_empty() {
+        s.push_str(&format!(
+            "Allowed harnesses for a subagent: {}.\n\n",
+            h.subagent_harnesses.join(", ")
+        ));
+    } else {
+        s.push_str("Any enabled harness may serve a subagent; omit -H and the planner chooses.\n\n");
+    }
+    s.push_str(
+        "A subagent is the same engine, so it obeys the same provider rules and writes to the \
+         same shared memory. Delegate only work that is genuinely separable — a subagent costs \
+         a whole model call. Put your subagents' findings in your answer; do not paste raw output.\n",
+    );
+    s
 }
 
 /// Run one job: route, execute, capture. Never panics; a failure is an Outcome
@@ -705,6 +746,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                     .find(|h| h.name == step.harness)
                     .cloned()
                     .ok_or_else(|| anyhow!("harness `{}` vanished", step.harness))?;
+                let delegation = delegation_brief(&h, 0);
                 let prompt = compose_prompt(
                     &task,
                     step,
@@ -712,6 +754,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                     &lesson_ctx,
                     &[],
                     opts.brief_prefix.as_deref(),
+                    &delegation,
                 );
                 jobs.push(Job { harness: h, prompt });
             }
@@ -776,6 +819,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                     .find(|h| h.name == step.harness)
                     .cloned()
                     .ok_or_else(|| anyhow!("harness `{}` vanished", step.harness))?;
+                let delegation = delegation_brief(&h, 0);
                 let prompt = compose_prompt(
                     &task,
                     step,
@@ -783,6 +827,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                     &lesson_ctx,
                     &prior,
                     opts.brief_prefix.as_deref(),
+                    &delegation,
                 );
                 let job = Job { harness: h, prompt };
                 let o = run_job(&job, &router, &session, &run_id, &db, opts.verbose, &ledger);

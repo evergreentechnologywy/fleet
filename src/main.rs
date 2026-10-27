@@ -92,6 +92,21 @@ enum Command {
     #[command(subcommand)]
     Config(ConfigCmd),
 
+    /// The catalog: everything the fleet can detect, install, and wire.
+    #[command(subcommand)]
+    Catalog(CatalogCmd),
+
+    /// Find drift between what is declared, installed, and present; and heal it.
+    Doctor(DoctorArgs),
+
+    /// The key inventory: what the fleet has, where from, and what is missing.
+    #[command(subcommand)]
+    Keys(KeysCmd),
+
+    /// Cloud VM runners: run a harness on a machine you do not own.
+    #[command(subcommand)]
+    Runners(RunnersCmd),
+
     /// Where everything lives.
     Paths,
 }
@@ -340,6 +355,17 @@ enum MemoryCmd {
         #[arg(long, default_value = "global")]
         scope: String,
     },
+    /// Which backend the fleet remembers with, and how to switch it.
+    Backend {
+        /// `sqlite` (default), `holographic`, `postgres`, or `http`.
+        name: Option<String>,
+        /// Where the backend lives.
+        #[arg(long)]
+        path: Option<String>,
+        /// Endpoint, for an `http` backend.
+        #[arg(long)]
+        url: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -493,6 +519,110 @@ enum ConfigCmd {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum CatalogCmd {
+    /// Everything the catalog declares, with its live state.
+    List {
+        /// Only entries whose tool is already on this machine.
+        #[arg(long)]
+        present: bool,
+        /// Only entries whose tool is NOT on this machine.
+        #[arg(long)]
+        absent: bool,
+        /// Filter by kind: harness, plugin, provider, target, runner, memory, integration.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Substring match on the name, description, or tags.
+        #[arg(long)]
+        search: Option<String>,
+    },
+    /// One entry in full: how to detect it, install it, and what keys it needs.
+    Show { name: String },
+    /// Wire an entry into the fleet (copy its artifact into the fleet home).
+    Install {
+        /// One entry, or `--all` for everything present but unwired.
+        name: Option<String>,
+        #[arg(long)]
+        all: bool,
+        /// Also install the upstream tool when the catalog knows how.
+        #[arg(long)]
+        upstream: bool,
+        /// Show what would happen without doing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Install the upstream tool a catalog entry names (npm/pip/cargo/brew).
+    Upstream {
+        name: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Where the catalog lives, and how to add an entry.
+    Dir,
+    /// Write a starter catalog entry you can edit.
+    New {
+        name: String,
+        #[arg(long, default_value = "harness")]
+        kind: String,
+    },
+}
+
+#[derive(Args, Debug)]
+struct DoctorArgs {
+    /// Print what healing would do, without doing it.
+    #[arg(long)]
+    dry_run: bool,
+    /// Only report; never change anything.
+    #[arg(long)]
+    check: bool,
+    /// Machine-readable findings.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum KeysCmd {
+    /// The expected keys, grouped, with presence and source. Never a value.
+    Show {
+        /// Only one group: provider, tooling, messaging, voice, money, marketing.
+        #[arg(long)]
+        group: Option<String>,
+        /// Only the ones that are missing.
+        #[arg(long)]
+        missing: bool,
+    },
+    /// Copy keys the machine already has into $FLEET_HOME/env.
+    Import {
+        /// Names to import; omit with --all to import every known key found.
+        names: Vec<String>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Keys present but not in the expected list — where new integrations come from.
+    Unexpected,
+    /// Where the fleet reads keys from, in precedence order.
+    Sources,
+}
+
+#[derive(Subcommand, Debug)]
+enum RunnersCmd {
+    /// Known cloud runners, what they need, and whether they are reachable.
+    List,
+    /// One runner in full.
+    Show { name: String },
+    /// Provision a machine and install the fleet on it.
+    Start {
+        name: String,
+        /// What to call this instance.
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 fn main() {
     if let Err(e) = real_main() {
         eprintln!("fleet: {e:#}");
@@ -537,6 +667,10 @@ fn real_main() -> Result<()> {
         Some(Command::Targets(c)) => c2::deploy_targets(c, cli.json),
         Some(Command::Credential(c)) => c2::credential(c, cli.json),
         Some(Command::Config(c)) => c2::config(c, cli.json),
+        Some(Command::Catalog(c)) => c2::catalog(c, cli.json),
+        Some(Command::Doctor(a)) => c2::doctor(a),
+        Some(Command::Keys(c)) => c2::keys(c, cli.json),
+        Some(Command::Runners(c)) => c2::runners(c, cli.json),
         Some(Command::Paths) => {
             c2::print_paths();
             Ok(())

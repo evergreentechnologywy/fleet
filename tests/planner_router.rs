@@ -31,6 +31,9 @@ fn h(name: &str, tags: &[&str], priority: i32, verifier: bool) -> Harness {
         cwd: None,
         deny_providers: vec![],
         plugins: true,
+        subagents: 0,
+        subagent_harnesses: Vec::new(),
+        subagent_depth: 1,
         source: None,
     }
 }

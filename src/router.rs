@@ -133,6 +133,35 @@ pub struct Config {
     /// Hard ceiling on concurrent harness processes in one run.
     #[serde(default)]
     pub max_parallel: Option<usize>,
+    /// Which memory backend to use, and its settings. Absent means `sqlite` at
+    /// the default path, which is what every existing install already is.
+    #[serde(default)]
+    pub memory: MemoryConfig,
+}
+
+/// How the fleet remembers. A backend is a name the engine understands plus the
+/// settings that name needs, so switching memory is a config edit rather than a
+/// migration, and the doctor can report the active backend and the alternatives.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryConfig {
+    /// `sqlite` (the default), `holographic` (the fleet's uf.db), `postgres`,
+    /// or `http` for a service that speaks the same JSON.
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// Where the backend lives, when that is not its default.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Endpoint for an `http` backend.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Env var holding a token for an `http` backend.
+    #[serde(default)]
+    pub token_env: Option<String>,
+    /// The node whose `fleet serve` is the shared memory hub. Every write is
+    /// mirrored there and every read falls back to it, which is what makes one
+    /// key visible on every node. Absent means node-local memory.
+    #[serde(default)]
+    pub hub: Option<String>,
 }
 
 impl Config {
