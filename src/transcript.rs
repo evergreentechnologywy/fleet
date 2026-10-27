@@ -487,11 +487,31 @@ mod tests {
 
     #[test]
     fn snippets_are_single_line_and_marked() {
-        let text = "alpha\n\n   beta NEEDLE gamma\tdelta";
-        let s = snippet(text, "needle", &opts());
+        // The text must be long enough to ACTUALLY truncate, or the marker
+        // assertions test nothing: with context=20 the original 35-char input
+        // fitted whole, so there was no excerpt to mark and the test failed on
+        // correct behaviour.
+        let text = format!(
+            "{} NEEDLE {}",
+            "lorem ipsum dolor sit amet ".repeat(4),
+            "consectetur adipiscing elit ".repeat(4)
+        );
+        let s = snippet(&text, "needle", &opts());
         assert!(s.contains("NEEDLE"), "{s}");
         assert!(!s.contains('\n'), "{s}");
-        assert!(s.starts_with('…') && s.ends_with('…'), "{s}");
+        assert!(s.starts_with('…'), "no leading marker: {s}");
+        assert!(s.ends_with('…'), "no trailing marker: {s}");
+    }
+
+    #[test]
+    fn a_short_snippet_is_not_marked_as_excerpted() {
+        // The other half of the same rule: do not put an ellipsis on a quote
+        // that was never cut. A marker that appears unconditionally stops
+        // meaning "there is more".
+        let text = "alpha beta NEEDLE gamma";
+        let s = snippet(text, "needle", &opts());
+        assert!(s.contains("NEEDLE"), "{s}");
+        assert!(!s.starts_with('…') && !s.ends_with('…'), "{s}");
     }
 
     #[test]
