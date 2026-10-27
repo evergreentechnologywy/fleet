@@ -1739,10 +1739,29 @@ pub fn runners(c: RunnersCmd, json: bool) -> Result<()> {
         .into_iter()
         .filter(|d| d.entry.kind == Kind::Runner)
         .collect();
+    // Maritime is a live runner, not a catalog entry: the fleet has an account
+    // with real machines on it, so `runners list` shows them rather than only
+    // describing what a runner would be.
+    let maritime = fleet::maritime::reachable();
 
     match c {
         RunnersCmd::List => {
             if json {
+                let live: Vec<serde_json::Value> = fleet::maritime::agents()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|a| serde_json::to_value(a).unwrap_or_default())
+                    .collect();
+                if !live.is_empty() {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "maritime": {"reachable": maritime.0, "detail": maritime.1, "agents": live}
+                        }))?
+                    );
+                    return Ok(());
+                }
+                // Catalog runners, in the same JSON envelope.
                 let v: Vec<_> = runners
                     .iter()
                     .map(|d| {
@@ -1757,12 +1776,30 @@ pub fn runners(c: RunnersCmd, json: bool) -> Result<()> {
                         })
                     })
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&v)?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "maritime": {"reachable": maritime.0, "detail": maritime.1},
+                        "catalog": v,
+                    }))?
+                );
                 return Ok(());
             }
+            println!(
+                "maritime: {} ({})",
+                if maritime.0 { "reachable" } else { "unreachable" },
+                maritime.1
+            );
+            if maritime.0 {
+                for a in fleet::maritime::agents().unwrap_or_default() {
+                    println!("  {}", fleet::maritime::summary(&a));
+                }
+                println!("  use:  fleet runners maritime start <name>");
+                println!("        fleet runners maritime chat <name> \"<task>\"");
+            }
             if runners.is_empty() {
-                println!("no runners in the catalog yet");
-                println!("catalog: {}", cat.dir().display());
+                println!();
+                println!("(no catalog runners)");
                 return Ok(());
             }
             for d in &runners {
@@ -1796,6 +1833,104 @@ pub fn runners(c: RunnersCmd, json: bool) -> Result<()> {
             if !d.entry.notes.is_empty() {
                 println!("  {}", d.entry.notes);
             }
+            Ok(())
+        }
+        RunnersCmd::Chat { machine, task } => {
+            let v = fleet::maritime::chat(&machine, &task.join(" "))?;
+            let text = v
+                .get("response")
+                .and_then(|r| r.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| serde_json::to_string_pretty(&v).unwrap_or_default());
+            println!("{text}");
+            Ok(())
+        }
+        RunnersCmd::Exec { machine, command } => {
+            let v = fleet::maritime::exec(&machine, &command.join(" "))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            print!("{}", v.get("stdout").and_then(|s| s.as_str()).unwrap_or(""));
+            let code = v.get("exitCode").and_then(|c| c.as_i64()).unwrap_or(0);
+            if code != 0 {
+                eprint!("{}", v.get("stderr").and_then(|s| s.as_str()).unwrap_or(""));
+                anyhow::bail!("command exited {code}");
+            }
+            Ok(())
+        }
+        RunnersCmd::Desktop {
+            machine,
+            status: _,
+            enable,
+            disable,
+            take,
+            release,
+            reason,
+        } => {
+            if enable {
+                let v = fleet::maritime::desktop_enable(&machine, true)?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                println!();
+                println!("note: enabling RESTARTS the machine; `desktop/mode` returns");
+                println!("      'Desktop control unreachable' for ~45 s while it boots.");
+                return Ok(());
+            }
+            if disable {
+                let v = fleet::maritime::desktop_enable(&machine, false)?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            if take || release {
+                let mode = if take { "agent" } else { "human" };
+                let v = fleet::maritime::desktop_takeover(&machine, mode, &reason)?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            let v = fleet::maritime::desktop_mode(&machine)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            match v.get("mode").and_then(|m| m.as_str()) {
+                Some(m) => println!("{machine} desktop mode: {m}"),
+                None => {
+                    println!("{machine}: {}", serde_json::to_string_pretty(&v)?);
+                    println!();
+                    println!("(enable with `fleet runners desktop {machine} --enable`; a machine");
+                    println!(" with no desktop reports 'Agent has no desktop')");
+                }
+            }
+            Ok(())
+        }
+        RunnersCmd::Stop { machine } => {
+            let v = fleet::maritime::stop(&machine)?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+        RunnersCmd::Start {
+            name,
+            label,
+            dry_run,
+        } if name == "maritime" => {
+            // `fleet runners start maritime <machine>`: the label names the
+            // machine, because the fleet has several and "start maritime" alone
+            // would not say which one.
+            let machine = label.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "name the machine: fleet runners start maritime <machine>. \
+                     Machines: {}",
+                    fleet::maritime::agents()
+                        .map(|a| a.into_iter().map(|x| x.name).collect::<Vec<_>>().join(", "))
+                        .unwrap_or_else(|_| "unavailable".into())
+                )
+            })?;
+            if dry_run {
+                println!("would wake Maritime machine `{machine}`");
+                return Ok(());
+            }
+            let v = fleet::maritime::start(&machine)?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
             Ok(())
         }
         RunnersCmd::Start {

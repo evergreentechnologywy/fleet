@@ -38,6 +38,7 @@ pub mod deploy_targets;
 pub mod engine;
 pub mod ledger;
 pub mod lessons;
+pub mod maritime;
 pub mod memory;
 pub mod mesh;
 pub mod paths;

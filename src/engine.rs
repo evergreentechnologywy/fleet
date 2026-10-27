@@ -890,24 +890,59 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
     // A named harness is checked against the live set before anything else
     // happens, so a typo or a just-deleted file produces a message naming the
     // problem instead of a generic failure further down.
+    //
+    // A harness that EXISTS but is disabled or un-runnable is different from a
+    // typo, and it must NOT end the run: the whole point of the fallback chain is
+    // that an unavailable first choice still produces an answer. So a real name
+    // that cannot run is reported and the chain is used; only an unknown name is
+    // an error, because then there is nothing to fall FROM.
+    let mut opts = opts.clone();
     if let Some(name) = opts.harness.as_deref() {
         if name != "auto" && !enabled.iter().any(|h| h.name == name) {
             let known: Vec<&str> = enabled.iter().map(|h| h.name.as_str()).collect();
             let installed: Vec<&str> = all.iter().map(|h| h.name.as_str()).collect();
-            let hint = if installed.contains(&name) {
-                format!(" (`{name}` is installed but disabled — `fleet harness enable {name}`)")
-            } else {
-                String::new()
-            };
-            return Err(anyhow!(
-                "no harness named `{name}` in {}. known: {}{hint}",
-                registry.dir().display(),
-                if known.is_empty() {
-                    "(none)".to_string()
+            if installed.contains(&name) {
+                // Substitute the first runnable rung of the fallback chain. This
+                // is what makes "reliable" true: asking for a harness that cannot
+                // run must not be the end of the task, and the substitution is
+                // REPORTED so the transcript never implies the requested harness
+                // did the work.
+                let cfg = crate::config::Config::load();
+                let chain = if cfg.fallback.chain.is_empty() {
+                    vec!["muse".to_string(), "liquid".to_string(), "opencode-free".to_string()]
                 } else {
-                    known.join(", ")
+                    cfg.fallback.chain.clone()
+                };
+                let sub = chain
+                    .iter()
+                    .find(|n| enabled.iter().any(|h| h.name == **n))
+                    .cloned();
+                match sub {
+                    Some(sub) => {
+                        eprintln!(
+                            "fleet: `{name}` is installed but not runnable — running `{sub}` instead"
+                        );
+                        opts.harness = Some(sub);
+                    }
+                    None => {
+                        // Nothing in the chain can run either. The run proceeds
+                        // with the named harness and fails loudly, which is the
+                        // honest outcome: a fleet with no runnable harness cannot
+                        // pretend otherwise.
+                        eprintln!("fleet: `{name}` is not runnable and the fallback chain has no runnable member");
+                    }
                 }
-            ));
+            } else {
+                return Err(anyhow!(
+                    "no harness named `{name}` in {}. known: {}",
+                    registry.dir().display(),
+                    if known.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        known.join(", ")
+                    }
+                ));
+            }
         }
     }
 

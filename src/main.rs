@@ -792,6 +792,42 @@ enum RunnersCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Talk to a Maritime machine: the task goes in, the answer comes back.
+    Chat {
+        /// The machine, e.g. omp-worker-1.
+        machine: String,
+        task: Vec<String>,
+    },
+    /// Run a command on a Maritime machine.
+    Exec {
+        machine: String,
+        command: Vec<String>,
+    },
+    /// The visible screen on a Maritime machine: a VM with a display.
+    Desktop {
+        /// The machine.
+        machine: String,
+        /// Show the current mode (the default).
+        #[arg(long)]
+        status: bool,
+        /// Turn the desktop on.
+        #[arg(long)]
+        enable: bool,
+        /// Turn it off.
+        #[arg(long)]
+        disable: bool,
+        /// Hand the screen to the agent.
+        #[arg(long)]
+        take: bool,
+        /// Hand it back to a human.
+        #[arg(long)]
+        release: bool,
+        /// Why the takeover happened; recorded.
+        #[arg(long, default_value = "fleet")]
+        reason: String,
+    },
+    /// Put a Maritime machine to sleep, to stop paying for compute.
+    Stop { machine: String },
 }
 
 fn main() {
