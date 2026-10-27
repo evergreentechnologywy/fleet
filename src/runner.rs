@@ -32,6 +32,13 @@ pub struct Outcome {
     pub ms: u128,
     /// The chooser's reasoning, kept so a run can explain itself afterwards.
     pub route_reason: String,
+    /// Tokens the provider reported for this call, when it reported any.
+    ///
+    /// 0 means "not reported", which is the honest value for a CLI harness: the
+    /// usage lives inside the child's own output format and varies per CLI. A
+    /// direct or HTTP call gets real numbers from the response body.
+    pub tokens_in: u64,
+    pub tokens_out: u64,
 }
 
 /// Resolve a command into something `spawn` can actually run.
@@ -300,7 +307,7 @@ pub fn call(
     cwd: &Path,
     env: &[(String, String)],
     on_line: &mut dyn FnMut(&str),
-) -> Result<String> {
+) -> Result<Called> {
     use crate::registry::Kind;
     match harness.kind {
         Kind::Cli => {
@@ -341,9 +348,9 @@ pub fn call(
             // Some CLIs print progress to stderr and the answer to stdout; if
             // stdout is empty the stderr tail is the only thing there is.
             if cap.stdout.trim().is_empty() && !cap.stderr.trim().is_empty() {
-                return Ok(cap.stderr);
+                return Ok(Called::plain(cap.stderr));
             }
-            Ok(cap.stdout)
+            Ok(Called::plain(cap.stdout))
         }
         Kind::Http | Kind::OpenaiCompat => {
             let spec = harness
@@ -388,7 +395,13 @@ pub fn call(
             match resp {
                 Ok(r) => {
                     let text = r.into_string()?;
-                    extract_message(&text)
+                    let msg = extract_message(&text)?;
+                    let (tin, tout) = extract_usage(&text);
+                    Ok(Called {
+                        text: msg,
+                        tokens_in: tin,
+                        tokens_out: tout,
+                    })
                 }
                 Err(ureq::Error::Status(code, r)) => {
                     let body = r.into_string().unwrap_or_default();
@@ -405,6 +418,44 @@ pub fn call(
     }
 }
 
+/// The result of one harness call: the text, plus whatever usage the transport
+/// could see.
+///
+/// A CLI harness reports no usage, so 0 is not "free" — it is "unknown", and the
+/// ledger says so rather than inventing a number.
+pub struct Called {
+    pub text: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+}
+
+impl Called {
+    fn plain(text: String) -> Called {
+        Called {
+            text,
+            tokens_in: 0,
+            tokens_out: 0,
+        }
+    }
+}
+
+/// Token counts from an [OI]-compatible response body, as (prompt, completion).
+///
+/// Providers disagree on where this lives (`prompt_tokens` vs `input_tokens`,
+/// `completion_tokens` vs `output_tokens`) and a missing block is normal for
+/// streaming and for some gateways. Returning (0,0) rather than failing keeps
+/// cost accounting a best-effort extra instead of a new way for a good call to
+/// fail.
+pub fn extract_usage(body: &str) -> (u64, u64) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return (0, 0);
+    };
+    let num = |ptr: &str| v.pointer(ptr).and_then(|x| x.as_u64()).unwrap_or(0);
+    (
+        num("/usage/prompt_tokens").max(num("/usage/input_tokens")),
+        num("/usage/completion_tokens").max(num("/usage/output_tokens")),
+    )
+}
 /// Pull the assistant text out of an OpenAI-compatible response without
 /// insisting on the exact shape: `choices[0].message.content`, then any
 /// `content` string, then `text`.

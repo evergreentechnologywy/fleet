@@ -245,6 +245,12 @@ struct RunCtx<'a> {
     verbose: bool,
     ledger: &'a crate::ledger::Ledger,
     enabled: &'a [crate::registry::Harness],
+    /// Where the HARNESS runs. This is the caller's directory, not a scratch
+    /// dir: a coding task handed to an agent that cannot see the repo is a task
+    /// the agent cannot do. Measured 2026-10-27: `fleet run` from inside the
+    /// fleet repo told the harness to list its cwd and it answered EMPTY,
+    /// because every job was being run in a fresh runs/<id>/<harness> dir.
+    cwd: &'a std::path::Path,
 }
 
 /// Run a job, and if it FAILS, try the configured alternates in order.
@@ -263,15 +269,15 @@ struct RunCtx<'a> {
 /// Never retries the harness that just failed, and never retries more than the
 /// configured budget, so a task cannot turn into an unbounded storm.
 fn run_job_with_fallback(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
+    // Only what the fallback loop itself needs; run_job reads the rest from ctx.
     let RunCtx {
         session,
         run_id,
-        db,
-        verbose,
         ledger,
         enabled,
+        ..
     } = *ctx;
-    let first = run_job(job, router, session, run_id, db, verbose, ledger);
+    let first = run_job(job, router, ctx);
     if first.ok {
         return first;
     }
@@ -322,7 +328,7 @@ fn run_job_with_fallback(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
             harness: h.clone(),
             prompt: job.prompt.clone(),
         };
-        let o = run_job(&alt, router, session, run_id, db, verbose, ledger);
+        let o = run_job(&alt, router, ctx);
         if o.ok {
             // Say which one actually answered, so the transcript never implies
             // the first harness did the work.
@@ -387,6 +393,7 @@ fn run_jobs(
             let led = crate::ledger::Ledger::default_path();
             let verbose = ctx.verbose;
             let enabled = ctx.enabled.to_vec();
+            let cwd = ctx.cwd.to_path_buf();
             handles.push(std::thread::spawn(move || {
                 let ctx = RunCtx {
                     session: &session,
@@ -395,6 +402,7 @@ fn run_jobs(
                     verbose,
                     ledger: &led,
                     enabled: &enabled,
+                    cwd: &cwd,
                 };
                 let o = run_job_with_fallback(&j, &router, &ctx);
                 out.lock().push(o);
@@ -417,20 +425,29 @@ fn run_jobs(
 
 /// Run one job: route, execute, capture. Never panics; a failure is an Outcome
 /// with `ok = false`, because one bad harness must not take a run down.
-fn run_job(
-    job: &Job,
-    router: &Router,
-    session: &str,
-    run_id: &str,
-    memory_db: &std::path::Path,
-    verbose: bool,
-    ledger: &crate::ledger::Ledger,
-) -> Outcome {
+fn run_job(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
+    let RunCtx {
+        session,
+        run_id,
+        db: memory_db,
+        verbose,
+        ledger,
+        enabled: _,
+        cwd,
+    } = *ctx;
     let d: Decision = router.decide(&job.harness, &job.prompt);
+    // Two different directories, and conflating them was the bug:
+    //   `work`  = this run's artifact dir (logs, dumps) — per run, per harness
+    //   `cwd`   = where the HARNESS actually runs — the caller's directory
+    // The harness used to get `work` as its cwd, so an agent asked to work on a
+    // repo was placed in an empty scratch dir and could see nothing. Measured
+    // 2026-10-27: `fleet run` inside the fleet repo, asking the harness to list
+    // its cwd, answered EMPTY.
     let work = crate::paths::runs_dir()
         .join(run_id)
         .join(&job.harness.name);
     let _ = std::fs::create_dir_all(&work);
+    let harness_cwd = cwd;
 
     // Providers are fleet-wide: the harness is told which ones it may use, and
     // the block rules in BOTH directions are applied here, in the call path,
@@ -526,6 +543,8 @@ fn run_job(
                 error: format!("skipped by plugin: {}", fx.skip_reason),
                 ms: 0,
                 route_reason: format!("{} {}", d.reason, d.source),
+                tokens_in: 0,
+                tokens_out: 0,
             };
         }
         for (k, v) in &fx.env {
@@ -569,7 +588,7 @@ fn run_job(
         &prompt,
         &d.model,
         &d.effort,
-        &work,
+        harness_cwd,
         &env,
         &mut sink,
     );
@@ -621,7 +640,7 @@ fn run_job(
                     &prompt,
                     &d.model,
                     &d.effort,
-                    &work,
+                    harness_cwd,
                     &retry_env,
                     &mut sink,
                 )
@@ -633,7 +652,11 @@ fn run_job(
     };
 
     match res {
-        Ok(text) => {
+        Ok(called) => {
+            // Split the transport result immediately: everything below wants the
+            // text, and only the Outcome and the ledger want the usage.
+            let text = called.text;
+            let (tokens_in, tokens_out) = (called.tokens_in, called.tokens_out);
             // post_call plugins can record to shared memory and, from any
             // harness, with no per-harness configuration.
             if job.harness.plugins {
@@ -682,7 +705,19 @@ fn run_job(
                 run_id,
                 session,
                 &job.harness.name,
-                &format!("ok model={} {}ms", d.model, started.elapsed().as_millis()),
+                &format!(
+                    "ok model={} {}ms{}",
+                    d.model,
+                    started.elapsed().as_millis(),
+                    // Only when the transport actually reported it: a CLI
+                    // harness has no usage block, and printing tok=0/0 would
+                    // read as a real measurement of zero.
+                    if tokens_in + tokens_out > 0 {
+                        format!(" tok={tokens_in}/{tokens_out}")
+                    } else {
+                        String::new()
+                    }
+                ),
                 true,
             );
             Outcome {
@@ -694,6 +729,8 @@ fn run_job(
                 error: String::new(),
                 ms: started.elapsed().as_millis(),
                 route_reason: format!("{} {}", d.reason, d.source),
+                tokens_in,
+                tokens_out,
             }
         }
         Err(e) => {
@@ -733,6 +770,8 @@ fn run_job(
                 error: msg,
                 ms: started.elapsed().as_millis(),
                 route_reason: format!("{} {}", d.reason, d.source),
+                tokens_in: 0,
+                tokens_out: 0,
             }
         }
     }
@@ -827,9 +866,22 @@ fn run_direct(
     }
     let resp = req.send_string(&body.to_string());
 
+    // Usage comes out of the same body as the message, so the direct path gets
+    // real numbers rather than the zeros a CLI harness has to report.
+    let direct_usage;
     let text = match resp {
         Ok(r) => {
             let v: serde_json::Value = r.into_json().unwrap_or_default();
+            direct_usage = (
+                v.pointer("/usage/prompt_tokens")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0)
+                    .max(v.pointer("/usage/input_tokens").and_then(|x| x.as_u64()).unwrap_or(0)),
+                v.pointer("/usage/completion_tokens")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0)
+                    .max(v.pointer("/usage/output_tokens").and_then(|x| x.as_u64()).unwrap_or(0)),
+            );
             v.get("choices")
                 .and_then(|c| c.as_array())
                 .and_then(|a| a.first())
@@ -891,6 +943,8 @@ fn run_direct(
             error: String::new(),
             ms: started.elapsed().as_millis(),
             route_reason: format!("direct call to {model} at {url}"),
+            tokens_in: direct_usage.0,
+            tokens_out: direct_usage.1,
         }],
         answer: text,
         ms: started.elapsed().as_millis(),
@@ -940,6 +994,20 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
             let _ = std::env::set_current_dir(&path);
         }
     }
+
+    // Where the harnesses run. `--session-dir`/`FLEET_CWD` may have moved the
+    // process above; otherwise this is the directory the user invoked `fleet`
+    // from — the one that holds their repo. Captured once, before any planner
+    // work, so every job in the run sees the same directory.
+    let work_cwd: std::path::PathBuf = opts
+        .cwd
+        .clone()
+        .filter(|d| !d.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var("FLEET_CWD").ok().map(std::path::PathBuf::from))
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| crate::paths::home())
+        });
 
     let session = match (&opts.resume, &opts.session) {
         (Some(s), _) => s.clone(),
@@ -1299,6 +1367,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                 verbose: opts.verbose,
                 ledger: &ledger,
                 enabled: &enabled,
+                cwd: &work_cwd,
             };
             let order: Vec<String> = plan.steps.iter().map(|s| s.harness.clone()).collect();
             calls = run_jobs(jobs, &router, &ctx, parallel, &order);
@@ -1312,6 +1381,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                 verbose: opts.verbose,
                 ledger: &ledger,
                 enabled: &enabled,
+                cwd: &work_cwd,
             };
             for step in &plan.steps {
                 let h = enabled
