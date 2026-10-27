@@ -111,6 +111,16 @@ impl Provider {
             .flatten()
     }
 
+    /// Does this provider have a credential that resolves at all? An OAuth
+    /// provider counts when its broker answers; a key provider counts when the
+    /// variable is set and non-empty.
+    pub fn has_credential(&self) -> bool {
+        match self.key_with(&crate::credential::Credentials::new(), false) {
+            Ok(Some(k)) => !k.is_empty(),
+            _ => false,
+        }
+    }
+
     pub fn available(&self) -> bool {
         self.key().is_some()
     }
@@ -206,14 +216,29 @@ impl Providers {
 
     /// The provider that should serve this model for this harness: the first
     /// allowed one that declares the model, else the first allowed at all.
+    ///
+    /// A provider is only a candidate when it has a USABLE CREDENTIAL, because a
+    /// provider whose key is unset or rejected produces a harness that cannot
+    /// authenticate — and the failure surfaces inside the CLI as "missing API
+    /// key", which reads as a fleet bug rather than a provider problem. Measured
+    /// 2026-10-27: qwen picked a `dashscope` provider whose key returns 401, and
+    /// every qwen call failed with "Missing API key for OpenAI-compatible auth".
+    ///
+    /// A provider with no credential at all is only used as a last resort, so a
+    /// fleet with nothing configured still behaves as it did.
     pub fn pick(&self, harness: &str, denies: &[String], model: &str) -> Option<Provider> {
         let allowed = self.for_harness(harness, denies);
-        allowed
-            .iter()
+        let keyed: Vec<&Provider> = allowed.iter().filter(|p| p.has_credential()).collect();
+        let pool: Vec<&Provider> = if keyed.is_empty() {
+            allowed.iter().collect()
+        } else {
+            keyed
+        };
+        pool.iter()
             .find(|p| !model.is_empty() && p.accepts(model) && p.available())
-            .or_else(|| allowed.iter().find(|p| p.available()))
-            .or_else(|| allowed.first())
-            .cloned()
+            .or_else(|| pool.iter().find(|p| p.available()))
+            .or_else(|| pool.first())
+            .map(|p| (*p).clone())
     }
 
     pub fn get(&self, name: &str) -> Option<Provider> {
