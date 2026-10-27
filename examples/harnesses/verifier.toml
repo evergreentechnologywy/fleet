@@ -1,0 +1,20 @@
+# A verifier is a harness too. It never runs by default: the planner adds it as
+# the last stage of a serial plan, where it can see the work above it.
+#
+#   fleet run "write the function and check it" --serial
+name = "verifier"
+description = "Deterministic check of the prior stage's output"
+kind = "cli"
+
+# Replace this with anything that can say yes or no: a test runner, a linter, a
+# model call, a script of your own. The engine only cares that it answers.
+command = "sh"
+args = ["-c", "p=$(cat); echo '{\"checked\": true, \"note\": \"no automated check configured\", \"saw_chars\": '\"${#p}\"'}"]
+prompt_on_stdin = true
+
+route = "native"
+verifier = true
+tags = ["verify"]
+priority = 0
+enabled = false
+timeout_s = 300

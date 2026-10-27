@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# A local fleet home, if someone runs the binary from a checkout.
+/.fleet/
+**/.fleet/
+
+# Editor and OS noise.
+.DS_Store
+.idea/
+.vscode/
+*.swp

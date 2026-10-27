@@ -1,0 +1,9 @@
+name = "budget-guard"
+description = "Veto a call once a daily call count is exceeded"
+events = ["pre_call"]
+harnesses = []
+command = "sh"
+args = ["plugin.sh"]
+timeout_s = 15
+priority = 100
+enabled = false

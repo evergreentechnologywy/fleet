@@ -1,0 +1,25 @@
+# The smallest useful harness: no model, no credential, no network.
+#
+# It exists to prove the whole path — planning, routing, execution, transcript,
+# ledger — before you involve a provider.
+#
+#   cp examples/harnesses/echo.toml ~/.fleet/harnesses/
+#   fleet run "hello" -H echo
+name = "echo"
+description = "Answers with a fixed string. No model, no key, no network."
+kind = "cli"
+
+command = "sh"
+# `cat` drains the prompt from stdin, then the marker is printed. A harness that
+# ignores its input is still a harness.
+args = ["-c", "cat >/dev/null 2>&1; printf '%s' 'echo-harness received your task'"]
+prompt_on_stdin = true
+
+# No chooser call: there is no model to choose.
+route = "native"
+
+tags = ["test", "cheap", "offline"]
+priority = 1
+cost_hint = 0.0
+enabled = true
+timeout_s = 30

@@ -1,0 +1,488 @@
+//! The CLI. Onboarding is two questions; everything after that is a file.
+
+use anyhow::Result;
+use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
+
+use fleet::*;
+
+mod cmd;
+mod cmd2;
+
+use cmd as c1;
+use cmd2 as c2;
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "fleet",
+    version,
+    about = "A harness for harnesses: route one task across many agent CLIs, each choosing its own model per call.",
+    long_about = "fleet is an orchestrator over harnesses. A harness is a TOML file in \
+                  $FLEET_HOME/harnesses — add one by writing a file, remove one by deleting \
+                  it, and neither needs a restart. Each call asks a chooser (Jev, or any \
+                  alternative, or nothing at all) which model to run with."
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    /// Print machine-readable output.
+    #[arg(long, global = true)]
+    json: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Run a task across one or more harnesses.
+    Run(RunArgs),
+
+    /// Manage harnesses: the files ARE the registration.
+    #[command(subcommand)]
+    Harness(HarnessCmd),
+
+    /// Manage providers: declared once, usable by every harness.
+    #[command(subcommand)]
+    Providers(ProvidersCmd),
+
+    /// Manage plugins: engine-level hooks that apply to every harness.
+    #[command(subcommand)]
+    Plugins(PluginsCmd),
+
+    /// Peer fleet nodes: reach them over Tailscale SSH, SSH, or Reason Network.
+    #[command(subcommand)]
+    Peers(PeersCmd),
+
+    /// Sessions: every conversation is stored in full and can be resumed.
+    #[command(subcommand)]
+    Sessions(SessionsCmd),
+
+    /// Shared memory: durable, last-version-wins, with full history.
+    #[command(subcommand)]
+    Memory(MemoryCmd),
+
+    /// Verifier-gated self-modification.
+    #[command(subcommand)]
+    Selfmod(SelfmodCmd),
+
+    /// What the engine learned from its own runs.
+    #[command(subcommand)]
+    Lessons(LessonsCmd),
+
+    /// The append-only ledger.
+    Ledger(LedgerArgs),
+
+    /// The HTTP API, for a hosted or local web app.
+    Serve(ServeArgs),
+
+    /// One-line deploy to a server.
+    Deploy(DeployArgs),
+
+    /// First run: pick a chooser, pick a provider, detect harnesses.
+    Onboard(OnboardArgs),
+
+    /// Configuration.
+    #[command(subcommand)]
+    Config(ConfigCmd),
+
+    /// Where everything lives.
+    Paths,
+}
+
+#[derive(Args, Debug)]
+struct RunArgs {
+    /// The task. Omit it to resume the last session.
+    task: Vec<String>,
+
+    /// Force one harness. `auto` lets the planner decide.
+    #[arg(long, short = 'H', default_value = "auto")]
+    harness: String,
+
+    /// Every plausible harness answers the same brief; the answers are merged.
+    #[arg(long)]
+    unison: bool,
+
+    /// Pipeline: each harness sees what the ones before it produced.
+    #[arg(long)]
+    serial: bool,
+
+    /// Resume a session by id, or `last` for the most recent one.
+    #[arg(long, short = 'r')]
+    resume: Option<String>,
+
+    /// Name the session explicitly.
+    #[arg(long, short = 's')]
+    session: Option<String>,
+
+    /// Show harness output as it streams.
+    #[arg(long, short = 'v')]
+    verbose: bool,
+
+    /// Text prepended to every brief, inline or a file path.
+    #[arg(long)]
+    brief: Option<String>,
+
+    /// Skip the lessons briefing, for a clean comparison.
+    #[arg(long)]
+    no_lessons: bool,
+
+    /// Only print the merged answer.
+    #[arg(long, short = 'q')]
+    quiet: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum HarnessCmd {
+    /// List the harnesses that are live right now.
+    List {
+        /// Re-read every descriptor instead of using the fingerprint cache.
+        #[arg(long)]
+        reload: bool,
+    },
+    /// Show one harness in full, including whether it can run.
+    Show {
+        name: String,
+    },
+    /// Is it usable right now?
+    Probe {
+        name: String,
+    },
+    /// Install a descriptor by copying it into the harness directory.
+    Add {
+        file: PathBuf,
+    },
+    /// Write a descriptor from a template and install it.
+    New {
+        /// Template: omp, codex, opencode, claude, grok, gemini, verifier,
+        /// openai-compat, blank.
+        #[arg(default_value = "blank")]
+        template: String,
+        /// Name for the new harness (defaults to the template name).
+        #[arg(long)]
+        name: Option<String>,
+        /// Base URL, for the openai-compat template.
+        #[arg(long)]
+        base_url: Option<String>,
+        /// Key env var, for the openai-compat template.
+        #[arg(long)]
+        key_env: Option<String>,
+        /// Write the file but do not install it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Delete a harness file.
+    Rm {
+        name: String,
+    },
+    /// Turn one on or off without deleting the file.
+    Enable {
+        name: String,
+    },
+    Disable {
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ProvidersCmd {
+    /// List providers and what each one is blocked from.
+    List,
+    /// Add or update a provider.
+    Add {
+        name: String,
+        #[arg(long)]
+        base_url: String,
+        #[arg(long)]
+        key_env: String,
+        /// Models this provider serves. Repeatable. Default `*`.
+        #[arg(long)]
+        model: Vec<String>,
+        /// Harnesses that must never receive this provider. Repeatable.
+        #[arg(long)]
+        block: Vec<String>,
+    },
+    /// Remove a provider.
+    Rm { name: String },
+    /// Show which providers each harness may use, and why.
+    Check {
+        /// One harness; omit for all of them.
+        harness: Option<String>,
+    },
+    /// Discover providers from the environment.
+    Detect {
+        /// Write what was found.
+        #[arg(long)]
+        write: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PluginsCmd {
+    /// List plugins and the events they handle.
+    List,
+    /// Install a plugin directory.
+    Add { path: PathBuf },
+    /// Remove a plugin.
+    Rm { name: String },
+    /// Fire one event by hand, to see what a plugin answers.
+    Test {
+        name: String,
+        #[arg(long, default_value = "pre_call")]
+        event: String,
+        #[arg(long, default_value = "sample task")]
+        task: String,
+    },
+    /// Write a working example plugin.
+    Example,
+    /// Where plugins live.
+    Dir,
+}
+
+#[derive(Subcommand, Debug)]
+enum PeersCmd {
+    /// Configured peers and whether they answer.
+    List,
+    /// Add a peer. The transport is probed unless pinned.
+    Add {
+        name: String,
+        #[arg(long)]
+        host: String,
+        /// Pin a transport: tailscale, ssh, reason.
+        #[arg(long)]
+        transport: Option<String>,
+        /// Extra ssh args, e.g. -p 2222.
+        #[arg(long)]
+        ssh_arg: Vec<String>,
+    },
+    /// Remove a peer.
+    Rm { name: String },
+    /// Peers visible on this machine that are not configured yet.
+    Discover,
+    /// Send a message to a peer. Falls back to email when told to.
+    Send {
+        name: String,
+        message: Vec<String>,
+        /// Send by email instead of a direct transport.
+        #[arg(long)]
+        email: Option<String>,
+    },
+    /// Read a peer's inbox.
+    Inbox { name: String },
+    /// Run one harness on a peer.
+    Run {
+        name: String,
+        harness: String,
+        task: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SessionsCmd {
+    /// Recent sessions with turn counts.
+    List {
+        #[arg(long, default_value_t = 30)]
+        limit: i64,
+    },
+    /// Print a full transcript.
+    Show {
+        id: String,
+        #[arg(long, default_value_t = 200)]
+        limit: i64,
+    },
+    /// The context a resume would inject.
+    Context {
+        id: String,
+        #[arg(long, default_value_t = 20)]
+        turns: i64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum MemoryCmd {
+    /// Entries in a scope, newest first.
+    List {
+        #[arg(long, default_value = "global")]
+        scope: String,
+        #[arg(long, default_value = "")]
+        prefix: String,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
+    /// Read one key.
+    Get {
+        key: String,
+        #[arg(long, default_value = "global")]
+        scope: String,
+    },
+    /// Write a key. Durable before it returns.
+    Put {
+        key: String,
+        value: Vec<String>,
+        #[arg(long, default_value = "global")]
+        scope: String,
+    },
+    /// Substring search everywhere.
+    Search {
+        needle: String,
+        #[arg(long, default_value_t = 30)]
+        limit: i64,
+    },
+    /// Every superseded value of a key, newest first.
+    History {
+        key: String,
+        #[arg(long, default_value = "global")]
+        scope: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SelfmodCmd {
+    /// Show the ceiling, the verifiers, and recent marks.
+    Status,
+    /// Create the ceiling file and the built-in verifier.
+    Init,
+    /// List installed verifiers.
+    Verifiers,
+    /// Digest an artifact and check it against the ceiling.
+    Check { target: String },
+    /// Ask for admission: frame check, then verifier, then a mark.
+    Propose {
+        target: String,
+        #[arg(long)]
+        reason: String,
+        /// New content: inline, or `@file`.
+        #[arg(long)]
+        content: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum LessonsCmd {
+    /// What the fleet has learned, most-observed first.
+    List {
+        #[arg(long, default_value_t = 30)]
+        limit: i64,
+    },
+    /// Record one by hand.
+    Add {
+        text: Vec<String>,
+        #[arg(long, default_value = "manual")]
+        kind: String,
+    },
+}
+
+#[derive(Args, Debug)]
+struct LedgerArgs {
+    #[arg(long, default_value_t = 40)]
+    limit: usize,
+    /// Filter by kind: route, call, plan, verify, mark, lesson, harness, run.
+    #[arg(long)]
+    kind: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct ServeArgs {
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+    #[arg(long, default_value_t = 8787)]
+    port: u16,
+}
+
+#[derive(Args, Debug)]
+struct DeployArgs {
+    /// ssh://host[:port], tailscale://host, reason://peer, docker://context,
+    /// file:./dir, or a bare host.
+    #[arg(long)]
+    to: String,
+    #[arg(long, default_value_t = 8787)]
+    port: u16,
+    #[arg(long, default_value = "/usr/local")]
+    prefix: String,
+    /// Build a release binary first.
+    #[arg(long)]
+    release: bool,
+    /// Start it after installing.
+    #[arg(long)]
+    run: bool,
+    /// Print the commands without executing them.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Args, Debug)]
+struct OnboardArgs {
+    /// Non-interactive: accept the detected defaults.
+    #[arg(long, short = 'y')]
+    yes: bool,
+    /// Chooser: jev, http, static, or a path to a command.
+    #[arg(long)]
+    chooser: Option<String>,
+    /// Provider base URL.
+    #[arg(long)]
+    base_url: Option<String>,
+    /// Env var holding the provider key.
+    #[arg(long)]
+    key_env: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigCmd {
+    /// Print the effective configuration.
+    Show,
+    /// Set the chooser.
+    SetChooser {
+        /// jev, http, static, or a command path.
+        kind: String,
+    },
+    /// Set the fallback model and effort.
+    SetDefault {
+        model: String,
+        #[arg(long)]
+        effort: Option<String>,
+    },
+}
+
+fn main() {
+    if let Err(e) = real_main() {
+        eprintln!("fleet: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn real_main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        None => {
+            // Bare `fleet` is the front door: if nothing is installed yet, that
+            // is the one thing worth saying.
+            let reg = registry::Registry::default_dir();
+            let (all, _) = reg.all();
+            if all.is_empty() {
+                println!("{}", c2::onboard_hint());
+                return Ok(());
+            }
+            print!("{}", c2::help_text(&reg));
+            Ok(())
+        }
+        Some(Command::Onboard(a)) => c2::onboard(a, cli.json),
+        Some(Command::Run(a)) => c1::run(a, cli.json),
+        Some(Command::Harness(c)) => c1::harness(c, cli.json),
+        Some(Command::Providers(c)) => c1::providers(c, cli.json),
+        Some(Command::Plugins(c)) => c2::plugins(c, cli.json),
+        Some(Command::Peers(c)) => c2::peers(c, cli.json),
+        Some(Command::Sessions(c)) => c2::sessions(c, cli.json),
+        Some(Command::Memory(c)) => c2::memory(c, cli.json),
+        Some(Command::Selfmod(c)) => c2::selfmod(c, cli.json),
+        Some(Command::Lessons(c)) => c2::lessons(c, cli.json),
+        Some(Command::Ledger(a)) => c2::ledger(a, cli.json),
+        Some(Command::Serve(a)) => {
+            paths::ensure_dirs()?;
+            api::serve(&a.host, a.port)
+        }
+        Some(Command::Deploy(a)) => c2::deploy(a),
+        Some(Command::Config(c)) => c2::config(c, cli.json),
+        Some(Command::Paths) => {
+            c2::print_paths();
+            Ok(())
+        }
+    }
+}

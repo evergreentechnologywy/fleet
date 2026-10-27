@@ -1,0 +1,10 @@
+name = "prompt-stamp"
+description = "Prepend a marker to every prompt, in every harness"
+events = ["pre_call"]
+# Empty harnesses = all of them, including ones added later.
+harnesses = []
+command = "sh"
+args = ["plugin.sh"]
+timeout_s = 15
+priority = 0
+enabled = false

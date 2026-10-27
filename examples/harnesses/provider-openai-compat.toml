@@ -1,0 +1,46 @@
+# A harness that is not a CLI at all: any OpenAI-compatible endpoint.
+#
+# This is the from-zero path. With one base URL and one key, `fleet` has a
+# harness — and the chooser still decides the model per call.
+#
+#   cp examples/harnesses/provider-openai-compat.toml ~/.fleet/harnesses/myprovider.toml
+#   # rename `name` to match the file, then:
+#   fleet run "hello" -H myprovider
+#
+# Note the field order: everything before the first `[table]` header belongs to
+# the harness. TOML has no "return to top level", so a key written after `[http]`
+# belongs to `[http]` — fleet accepts the key fields in either place, but the
+# convention here is the readable one.
+name = "myprovider"
+description = "Any OpenAI-compatible endpoint, model chosen by the chooser"
+kind = "openai-compat"
+
+# A credential is ALWAYS named as an env var, never written here, so this file
+# is safe to commit and to publish.
+api_key_env = "MYPROVIDER_API_KEY"
+
+# `jev`       ask the chooser per call (model + effort)
+# `fixed`     pin the model below, no chooser call
+# `native`    send no model and let the endpoint decide
+# `self-routing`  point the endpoint at the chooser's door and let IT choose
+route = "jev"
+
+# Used when route = "fixed", or when the chooser cannot answer.
+model = "default"
+effort = "medium"
+
+# The ceiling: model ids this harness may ever be served. `["*"]` means any.
+models = ["*"]
+
+tags = ["chat", "long"]
+priority = 50
+cost_hint = 0.0
+enabled = true
+timeout_s = 600
+
+[http]
+base_url = "https://api.myprovider.ai/v1"
+# The path is joined onto the base without doubling a shared `/v1`.
+chat_path = "/v1/chat/completions"
+auth_header = "Authorization"
+auth_scheme = "Bearer"

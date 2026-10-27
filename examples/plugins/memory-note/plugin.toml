@@ -1,0 +1,8 @@
+name = "memory-note"
+description = "Record the last call per harness in shared memory"
+events = ["post_call"]
+harnesses = []
+command = "sh"
+args = ["plugin.sh"]
+timeout_s = 15
+enabled = false

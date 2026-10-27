@@ -1,0 +1,19 @@
+# A local model server: no credential, no cloud, no key.
+#
+#   llama-server -m model.gguf --port 8080
+name = "local"
+description = "Local llama.cpp server"
+kind = "openai-compat"
+
+route = "fixed"
+model = "local-model"
+models = ["*"]
+tags = ["local", "cheap", "offline"]
+priority = 20
+cost_hint = 0.0
+enabled = false
+timeout_s = 600
+
+[http]
+base_url = "http://127.0.0.1:8080/v1"
+chat_path = "/v1/chat/completions"
