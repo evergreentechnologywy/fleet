@@ -325,6 +325,10 @@ fn serve_one(host: &str, port: u16, registry: &Registry) -> Result<()> {
                             .and_then(|b| b.as_bool())
                             .unwrap_or(false),
                         dry: false,
+                        worktree: v
+                            .get("worktree")
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(false),
                         // The HTTP door exposes the same fan-out ability as the
                         // CLI, so a caller of the hosted app can run the swarm
                         // without a shell.

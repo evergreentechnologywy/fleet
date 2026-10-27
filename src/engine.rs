@@ -68,6 +68,14 @@ pub struct RunOptions {
     pub cwd: Option<String>,
     /// Resume the most recent session (`-c`, omp compatibility).
     pub continue_session: bool,
+    /// Give each harness its own `git worktree` off HEAD, instead of letting
+    /// every job write into the caller's directory.
+    ///
+    /// Parallel agents editing one tree is the failure mode of multi-agent
+    /// coding: two harnesses fix different bugs and overwrite each other, and the
+    /// damage looks like a bad model rather than a bad schedule. With this on,
+    /// each job gets an isolated checkout and the operator merges what they want.
+    pub worktree: bool,
     /// How deep in a delegation tree this run is.
     ///
     /// Subagents are separate `fleet run` PROCESSES, so depth cannot be counted in
@@ -251,6 +259,8 @@ struct RunCtx<'a> {
     /// fleet repo told the harness to list its cwd and it answered EMPTY,
     /// because every job was being run in a fresh runs/<id>/<harness> dir.
     cwd: &'a std::path::Path,
+    /// Give each job its own worktree off HEAD (`--worktree`).
+    worktree: bool,
 }
 
 /// Run a job, and if it FAILS, try the configured alternates in order.
@@ -344,6 +354,38 @@ fn run_job_with_fallback(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
     last
 }
 
+
+/// Give one job its own git worktree off HEAD, so parallel harnesses cannot
+/// overwrite each other.
+///
+/// Returns None when isolation is not possible, and says why: a directory that is
+/// not a git repo, a repo with no commits yet, or a `git` that is absent. Falling
+/// back to the shared directory is the right call there — refusing to run would
+/// make the flag unusable outside a repo — but the caller is told, because a
+/// silently-shared directory is exactly the collision this exists to prevent.
+fn make_worktree(repo: &std::path::Path, run_id: &str, harness: &str) -> Option<std::path::PathBuf> {
+    if !repo.join(".git").exists() {
+        return None;
+    }
+    let dir = crate::paths::runs_dir()
+        .join(run_id)
+        .join(format!("wt-{harness}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    // Detached HEAD: a worktree per job must not fight over a branch name.
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "add", "--detach", "--force"])
+        .arg(&dir)
+        .arg("HEAD")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(dir)
+}
+
 /// Run a batch of jobs, in parallel when the config allows it.
 ///
 /// Extracted from `run` so a subagent fan-out reuses the SAME executor rather
@@ -394,6 +436,7 @@ fn run_jobs(
             let verbose = ctx.verbose;
             let enabled = ctx.enabled.to_vec();
             let cwd = ctx.cwd.to_path_buf();
+            let worktree = ctx.worktree;
             handles.push(std::thread::spawn(move || {
                 let ctx = RunCtx {
                     session: &session,
@@ -403,6 +446,7 @@ fn run_jobs(
                     ledger: &led,
                     enabled: &enabled,
                     cwd: &cwd,
+                    worktree,
                 };
                 let o = run_job_with_fallback(&j, &router, &ctx);
                 out.lock().push(o);
@@ -434,6 +478,7 @@ fn run_job(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
         ledger,
         enabled: _,
         cwd,
+        worktree: _,
     } = *ctx;
     let d: Decision = router.decide(&job.harness, &job.prompt);
     // Two different directories, and conflating them was the bug:
@@ -447,7 +492,22 @@ fn run_job(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
         .join(run_id)
         .join(&job.harness.name);
     let _ = std::fs::create_dir_all(&work);
-    let harness_cwd = cwd;
+    // Isolation is per JOB, not per run: two harnesses in one unison must not
+    // share a checkout, which is the whole point of the flag.
+    let isolated = if ctx.worktree {
+        make_worktree(cwd, run_id, &job.harness.name)
+    } else {
+        None
+    };
+    if ctx.worktree && isolated.is_none() {
+        eprintln!(
+            "fleet: --worktree requested but `{}` is not a usable git repo; \
+             `{}` shares the caller's directory",
+            cwd.display(),
+            job.harness.name
+        );
+    }
+    let harness_cwd = isolated.as_deref().unwrap_or(cwd);
 
     // Providers are fleet-wide: the harness is told which ones it may use, and
     // the block rules in BOTH directions are applied here, in the call path,
@@ -1368,6 +1428,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                 ledger: &ledger,
                 enabled: &enabled,
                 cwd: &work_cwd,
+                worktree: opts.worktree,
             };
             let order: Vec<String> = plan.steps.iter().map(|s| s.harness.clone()).collect();
             calls = run_jobs(jobs, &router, &ctx, parallel, &order);
@@ -1382,6 +1443,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                 ledger: &ledger,
                 enabled: &enabled,
                 cwd: &work_cwd,
+                worktree: opts.worktree,
             };
             for step in &plan.steps {
                 let h = enabled

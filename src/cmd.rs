@@ -58,6 +58,7 @@ pub fn run(a: RunArgs, json: bool) -> Result<()> {
         // subagents are bounded too. Set by the parent through FLEET_DEPTH.
         depth: fleet::engine::depth_from_env(),
         subagents: a.subagents,
+        worktree: a.worktree,
         subagent_harnesses: a.subagent_harnesses.clone(),
     };
     let res = fleet::engine::run(&task, &opts)?;

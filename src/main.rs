@@ -267,6 +267,15 @@ struct RunArgs {
     /// enabled harness the planner picks.
     #[arg(long, value_delimiter = ',')]
     subagent_harnesses: Vec<String>,
+
+    /// Give each harness its own `git worktree` off HEAD.
+    ///
+    /// Parallel agents editing one tree is the failure mode of multi-agent
+    /// coding: two harnesses fix different bugs, overwrite each other, and it
+    /// looks like a bad model rather than a bad schedule. With this on, each job
+    /// gets an isolated checkout and you merge what you want.
+    #[arg(long)]
+    worktree: bool,
 }
 
 #[derive(Subcommand, Debug)]

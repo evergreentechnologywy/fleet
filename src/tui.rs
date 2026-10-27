@@ -97,6 +97,7 @@ impl Repl {
             // Fan-out is a per-run choice, not a sticky REPL mode, so it stays
             // off here; `fleet run --subagents N` is how to ask for it.
             subagents: 0,
+            worktree: false,
             subagent_harnesses: Vec::new(),
             continue_session: false,
         }
