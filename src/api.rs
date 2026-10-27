@@ -510,6 +510,113 @@ fn serve_one(host: &str, port: u16, registry: &Registry) -> Result<()> {
                         }),
                     ))
                 }
+                (Method::Get, "/v1/catalog") => {
+                    // What the fleet can detect, install, and wire — with live
+                    // state, so the web app can show "present but unwired" rather
+                    // than making the reader run a CLI to find out.
+                    let cat = crate::catalog::Catalog::default_dir();
+                    let (found, errors) = cat.discover();
+                    let rows: Vec<serde_json::Value> = found
+                        .iter()
+                        .map(|d| {
+                            json!({
+                                "name": d.entry.name,
+                                "kind": format!("{:?}", d.entry.kind).to_lowercase(),
+                                "description": d.entry.description,
+                                "tags": d.entry.tags,
+                                "present": d.present,
+                                "installed": d.installed,
+                                "evidence": d.evidence,
+                                "keys_missing": d.keys_missing,
+                                "docs": d.entry.docs,
+                            })
+                        })
+                        .collect();
+                    let errs: Vec<serde_json::Value> = errors
+                        .iter()
+                        .map(|(p, e)| json!({"path": p.to_string_lossy(), "error": e}))
+                        .collect();
+                    Ok(json_response(200, json!({"entries": rows, "errors": errs})))
+                }
+                (Method::Get, "/v1/doctor") => {
+                    // Read-only: the web app shows drift but never heals it. A
+                    // browser button that changes the host is a button that
+                    // changes the host by accident.
+                    let report = crate::doctor::check();
+                    Ok(json_response(200, serde_json::to_value(report)?))
+                }
+                (Method::Get, "/v1/keys") => {
+                    // Names, groups, sources, fingerprints. NEVER a value.
+                    let inv = crate::keys::inventory();
+                    Ok(json_response(200, json!({"keys": inv})))
+                }
+                (Method::Get, "/v1/comms") => {
+                    use crate::comms::Channel;
+                    let chans = [
+                        (Channel::Sms, "sms"),
+                        (Channel::Call, "call"),
+                        (Channel::Email, "email"),
+                    ];
+                    let rows: Vec<serde_json::Value> = chans
+                        .into_iter()
+                        .map(|(c, n)| {
+                            let have = crate::comms::available(c);
+                            json!({"channel": n, "available": have})
+                        })
+                        .collect();
+                    let sent = Memory::open_default()?
+                        .list("comms", "", 25)?
+                        .into_iter()
+                        .map(|(k, v)| json!({"key": k, "value": v}))
+                        .collect::<Vec<_>>();
+                    Ok(json_response(200, json!({"channels": rows, "recent": sent})))
+                }
+                (Method::Get, "/v1/pay") => {
+                    let p = crate::pay::policy();
+                    Ok(json_response(
+                        200,
+                        json!({
+                            "rails": crate::pay::balances(),
+                            "policy": {
+                                "path": crate::pay::policy_path().to_string_lossy(),
+                                "auto_approve_under_usd": p.auto_approve_under_usd,
+                                "hard_cap_usd": p.hard_cap_usd,
+                                "allowlist": p.allowlist,
+                            },
+                            "wallet": crate::pay::wallet_address().ok(),
+                        }),
+                    ))
+                }
+                (Method::Get, "/v1/domain") => {
+                    let providers = crate::domain::providers();
+                    Ok(json_response(
+                        200,
+                        json!({"providers": providers, "dns": crate::domain::dns_provider(None).ok()}),
+                    ))
+                }
+                (Method::Get, "/v1/runners") => {
+                    // Live machines, when the account is reachable. A runner that
+                    // is not configured returns its absence rather than an error.
+                    let (ok, detail) = crate::maritime::reachable();
+                    let agents = crate::maritime::agents().unwrap_or_default();
+                    Ok(json_response(
+                        200,
+                        json!({"maritime": {"reachable": ok, "detail": detail, "agents": agents}}),
+                    ))
+                }
+                (Method::Get, "/v1/memory/backend") => {
+                    let (active, cfg) = crate::memory_backend::active();
+                    Ok(json_response(
+                        200,
+                        json!({
+                            "active": active,
+                            "path": crate::memory_backend::active_path(),
+                            "url": cfg.memory.url,
+                            "hub": crate::memory_share::hub(),
+                            "backends": crate::memory_backend::backends(),
+                        }),
+                    ))
+                }
                 (Method::Get, "/v1/config") => {
                     let c = crate::config::Config::load();
                     Ok(json_response(

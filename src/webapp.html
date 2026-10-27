@@ -90,6 +90,12 @@
   <button data-tab="sessions">Sessions</button>
   <button data-tab="memory">Memory</button>
   <button data-tab="creds">Credentials</button>
+  <button data-tab="catalog">Catalog</button>
+  <button data-tab="doctor">Doctor</button>
+  <button data-tab="keys">Keys</button>
+  <button data-tab="comms">Comms</button>
+  <button data-tab="money">Money</button>
+  <button data-tab="runners">Runners</button>
   <button data-tab="engine">Engine</button>
 </nav>
 
@@ -166,6 +172,104 @@ base_url = "https://api.example.ai/v1"'></textarea>
       <div class="hint">Last version wins. Superseded values are kept and reachable through history.</div>
     </div>
     <div id="memOut"></div>
+  </section>
+
+
+  <!-- ---------------------------------------------------------------- catalog -->
+  <section id="tab-catalog">
+    <div class="card">
+      <div class="row">
+        <input type="text" id="catq" placeholder="filter by name, tag, or kind…" style="width:auto; min-width:260px">
+        <button class="ghost" id="catPresent">present only</button>
+        <button class="ghost" id="catAll">all</button>
+      </div>
+      <div class="hint">
+        What the fleet can detect and wire. <strong>PRESENT, unwired</strong> means the tool is on
+        this machine and the fleet is not using it yet — the cheapest capacity there is.
+      </div>
+    </div>
+    <div id="catOut"></div>
+  </section>
+
+  <!-- ----------------------------------------------------------------- doctor -->
+  <section id="tab-doctor">
+    <div class="card">
+      <div class="row"><strong>Drift</strong>
+        <span class="dim">declared vs installed vs present</span>
+        <button class="ghost" id="docCheck">check</button>
+      </div>
+      <div class="hint">
+        Read-only here on purpose. Healing runs on a timer on the host, so a browser
+        button cannot change the machine by accident.
+      </div>
+    </div>
+    <div id="docOut"></div>
+  </section>
+
+  <!-- ------------------------------------------------------------------- keys -->
+  <section id="tab-keys">
+    <div class="card">
+      <div class="row">
+        <select id="keyGroup" style="width:auto">
+          <option value="">all groups</option>
+          <option>provider</option><option>tooling</option><option>messaging</option>
+          <option>voice</option><option>money</option><option>marketing</option>
+        </select>
+        <button class="ghost" id="keyMissing">missing only</button>
+        <button class="ghost" id="keyLoad">load</button>
+      </div>
+      <div class="hint">
+        Names, groups, and a fingerprint. <strong>Never a value</strong> — the page cannot
+        leak a key it was never given.
+      </div>
+    </div>
+    <div id="keyOut"></div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ comms -->
+  <section id="tab-comms">
+    <div class="card">
+      <div class="row"><strong>Comms</strong>
+        <span class="dim">texting, calling, email</span>
+        <button class="ghost" id="commsLoad">load</button>
+      </div>
+      <div class="hint">
+        Sending needs a channel the fleet actually has configured. A new recipient needs
+        confirmation once, then never again.
+      </div>
+    </div>
+    <div id="commsOut"></div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ money -->
+  <section id="tab-money">
+    <div class="card">
+      <div class="row"><strong>Money</strong>
+        <span class="dim">rails, policy, wallet</span>
+        <button class="ghost" id="payLoad">load</button>
+      </div>
+      <div class="hint">
+        Reading is free. <strong>Moving money needs an approval token and a written
+        policy</strong>, and the default cap is zero — a fleet not told what it may
+        spend spends nothing.
+      </div>
+    </div>
+    <div id="payOut"></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- runners -->
+  <section id="tab-runners">
+    <div class="card">
+      <div class="row"><strong>Runners</strong>
+        <span class="dim">cloud machines the fleet can drive</span>
+        <button class="ghost" id="runLoad">load</button>
+      </div>
+      <div class="hint">
+        A runner is a machine you do not own. Maritime machines show their real state —
+        a sleeping machine costs nothing until you wake it.
+      </div>
+    </div>
+    <div id="runOut"></div>
   </section>
 
   <!-- ------------------------------------------------------------ credentials -->
@@ -318,6 +422,144 @@ function renderRun(d, ms) {
 }
 
 // ---- harnesses ------------------------------------------------------------
+
+// ---- catalog --------------------------------------------------------------
+let catCache = null;
+async function loadCatalog(presentOnly) {
+  try {
+    const d = await api("/v1/catalog");
+    catCache = d.entries || [];
+    renderCatalog(presentOnly ? catCache.filter(e => e.present) : catCache);
+  } catch (e) { $("#catOut").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; }
+}
+function renderCatalog(rows) {
+  if (!rows.length) { $("#catOut").innerHTML = '<div class="card dim">nothing matches</div>'; return; }
+  const wired = rows.filter(r => r.installed).length;
+  const ready = rows.filter(r => r.present && !r.installed).length;
+  const body = rows.map(e => {
+    const state = e.present && e.installed ? '<span class="ok">wired</span>'
+      : e.present ? '<span class="warn">PRESENT, unwired</span>'
+      : e.installed ? '<span class="bad">WIRED, absent</span>'
+      : '<span class="dim">absent</span>';
+    const needs = (e.keys_missing || []).length
+      ? `<span class="dim"> · needs ${esc(e.keys_missing.join(", "))}</span>` : "";
+    return `<tr>
+      <td class="mono">${esc(e.name)}</td>
+      <td class="mono dim">${esc(e.kind)}</td>
+      <td>${state}${needs}</td>
+      <td class="dim">${esc(e.description)}</td>
+    </tr>`;
+  }).join("");
+  $("#catOut").innerHTML = `<div class="card">
+    <div class="hint">${rows.length} entries · ${wired} wired · <strong>${ready} present but unwired</strong>
+      ${ready ? " — wire them on the host with <span class=\"mono\">fleet catalog install --all</span>" : ""}</div>
+    <table><thead><tr><th>name</th><th>kind</th><th>state</th><th>what it is</th></tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+
+// ---- doctor ---------------------------------------------------------------
+async function loadDoctor() {
+  try {
+    const d = await api("/v1/doctor");
+    const f = d.findings || [];
+    const body = f.length ? f.map(x => {
+      const cls = x.severity === "problem" ? "bad" : x.severity === "suggestion" ? "warn" : "dim";
+      return `<tr><td class="${cls} mono">${esc(x.severity)}</td>
+        <td class="mono dim">${esc(x.code)}</td>
+        <td>${esc(x.summary)}${x.evidence ? `<div class="dim mono">${esc(x.evidence)}</div>` : ""}</td></tr>`;
+    }).join("") : '<tr><td colspan="3" class="ok">no findings — declared, installed, and present agree</td></tr>';
+    $("#docOut").innerHTML = `<div class="card">
+      <div class="hint">${d.problems} problem(s), ${d.suggestions} suggestion(s)
+        ${d.ok ? '<span class="ok">— ok</span>' : '<span class="bad">— needs attention</span>'}</div>
+      <table><thead><tr><th>severity</th><th>code</th><th>finding</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  } catch (e) { $("#docOut").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; }
+}
+
+// ---- keys -----------------------------------------------------------------
+async function loadKeys(missingOnly) {
+  try {
+    const d = await api("/v1/keys");
+    let ks = d.keys || [];
+    const g = $("#keyGroup").value;
+    if (g) ks = ks.filter(k => k.group === g);
+    if (missingOnly) ks = ks.filter(k => !k.present);
+    const body = ks.map(k => `<tr>
+      <td class="${k.present ? "ok" : "warn"} mono">${k.present ? "ok" : "MISS"}</td>
+      <td class="mono">${esc(k.name)}</td>
+      <td class="dim">${esc(k.group)}</td>
+      <td class="dim">${esc(k.present ? (k.source || "") : (k.purpose || ""))}</td>
+      <td class="mono dim">${esc(k.fingerprint || "")}</td></tr>`).join("");
+    const have = ks.filter(k => k.present).length;
+    $("#keyOut").innerHTML = `<div class="card">
+      <div class="hint">${have} of ${ks.length} shown are set. Values are never shown.</div>
+      <table><thead><tr><th></th><th>name</th><th>group</th><th>source / purpose</th><th>fingerprint</th></tr></thead>
+      <tbody>${body}</tbody></table></div>`;
+  } catch (e) { $("#keyOut").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; }
+}
+
+// ---- comms ----------------------------------------------------------------
+async function loadComms() {
+  try {
+    const d = await api("/v1/comms");
+    const chans = (d.channels || []).map(c => {
+      const have = c.available || [];
+      return `<tr><td class="mono">${esc(c.channel)}</td>
+        <td class="${have.length ? "ok" : "dim"}">${have.length ? esc(have.join(", ")) : "none configured"}</td></tr>`;
+    }).join("");
+    const recent = (d.recent || []).length
+      ? (d.recent || []).map(r => `<tr><td class="mono">${esc(r.key)}</td><td class="dim">${esc(r.value)}</td></tr>`).join("")
+      : '<tr><td colspan="2" class="dim">nothing sent yet</td></tr>';
+    $("#commsOut").innerHTML = `<div class="card">
+      <table><thead><tr><th>channel</th><th>providers</th></tr></thead><tbody>${chans}</tbody></table>
+      <div class="hint" style="margin-top:12px">Recent sends</div>
+      <table><tbody>${recent}</tbody></table></div>`;
+  } catch (e) { $("#commsOut").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; }
+}
+
+// ---- money ----------------------------------------------------------------
+async function loadPay() {
+  try {
+    const d = await api("/v1/pay");
+    const rails = (d.rails || []).length
+      ? (d.rails || []).map(r => `<tr><td class="mono">${esc(r.rail)}</td><td class="mono">${esc(r.provider)}</td><td class="dim">${esc(r.note || "")}</td></tr>`).join("")
+      : '<tr><td colspan="3" class="dim">no rails configured</td></tr>';
+    const p = d.policy || {};
+    const zero = !p.hard_cap_usd;
+    $("#payOut").innerHTML = `<div class="card">
+      <table><thead><tr><th>rail</th><th>provider</th><th></th></tr></thead><tbody>${rails}</tbody></table>
+      <div class="hint" style="margin-top:12px">Policy <span class="mono dim">${esc(p.path || "")}</span></div>
+      <table><tbody>
+        <tr><td class="dim">auto-approve under</td><td class="mono">$${(p.auto_approve_under_usd || 0).toFixed(2)}</td></tr>
+        <tr><td class="dim">hard cap</td><td class="mono">$${(p.hard_cap_usd || 0).toFixed(2)}</td></tr>
+        <tr><td class="dim">allowlist</td><td class="mono">${esc((p.allowlist || []).join(", ") || "(none)")}</td></tr>
+        <tr><td class="dim">wallet</td><td class="mono">${esc(d.wallet || "none")}</td></tr>
+      </tbody></table>
+      ${zero ? '<div class="hint bad" style="margin-top:10px">A cap of 0 means the fleet may spend NOTHING — the safe default.</div>' : ""}
+    </div>`;
+  } catch (e) { $("#payOut").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; }
+}
+
+// ---- runners --------------------------------------------------------------
+async function loadRunners() {
+  try {
+    const d = await api("/v1/runners");
+    const m = d.maritime || {};
+    const agents = m.agents || [];
+    const body = agents.length ? agents.map(a => `<tr>
+      <td class="mono">${esc(a.name)}</td>
+      <td class="${a.status === "active" || a.status === "running" ? "ok" : "dim"}">${esc(a.status || "")}</td>
+      <td class="dim mono">${esc(a.tier || "")}</td>
+      <td class="dim">${a.invocation_count || 0} run(s), ${Math.round((a.total_compute_seconds || 0) / 60)} min</td></tr>`).join("")
+      : '<tr><td colspan="4" class="dim">no machines</td></tr>';
+    $("#runOut").innerHTML = `<div class="card">
+      <div class="hint">maritime: ${m.reachable ? '<span class="ok">reachable</span>' : '<span class="dim">not configured</span>'}
+        ${esc(m.detail || "")}</div>
+      <table><thead><tr><th>machine</th><th>state</th><th>tier</th><th>usage</th></tr></thead><tbody>${body}</tbody></table>
+      <div class="hint" style="margin-top:10px">A sleeping machine costs nothing until you wake it.
+        <span class="mono">fleet runners start maritime &lt;machine&gt;</span></div></div>`;
+  } catch (e) { $("#runOut").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; }
+}
+
 async function loadHarnesses() {
   try {
     const d = await api("/v1/harnesses");
@@ -418,6 +660,26 @@ async function loadMemory() {
   } catch (e) { $("#memOut").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; }
 }
 $("#memSearch").addEventListener("click", loadMemory);
+
+// The new panels. Each button loads on demand rather than on page load, so
+// opening the app costs no API calls for surfaces you are not looking at.
+$("#catPresent").addEventListener("click", () => loadCatalog(true));
+$("#catAll").addEventListener("click", () => loadCatalog(false));
+$("#catq").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || !catCache) return;
+  const n = $("#catq").value.toLowerCase();
+  renderCatalog(catCache.filter(x =>
+    x.name.toLowerCase().includes(n) ||
+    (x.kind || "").toLowerCase().includes(n) ||
+    (x.tags || []).some(t => t.toLowerCase().includes(n))));
+});
+$("#docCheck").addEventListener("click", loadDoctor);
+$("#keyLoad").addEventListener("click", () => loadKeys(false));
+$("#keyMissing").addEventListener("click", () => loadKeys(true));
+$("#keyGroup").addEventListener("change", () => loadKeys(false));
+$("#commsLoad").addEventListener("click", loadComms);
+$("#payLoad").addEventListener("click", loadPay);
+$("#runLoad").addEventListener("click", loadRunners);
 $("#memList").addEventListener("click", loadMemory);
 $("#memq").addEventListener("keydown", (e) => { if (e.key === "Enter") loadMemory(); });
 
