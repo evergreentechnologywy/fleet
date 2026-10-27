@@ -51,6 +51,7 @@ pub mod router;
 pub mod runner;
 pub mod selfmod;
 pub mod templates;
+pub mod transcript;
 pub mod webapp;
 
 use time::format_description::well_known::Rfc3339;

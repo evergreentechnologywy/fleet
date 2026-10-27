@@ -323,9 +323,76 @@ pub fn sessions(c: SessionsCmd, json: bool) -> Result<()> {
             println!("{}", mem.resume_context(&id, turns)?);
             Ok(())
         }
+        SessionsCmd::Search {
+            query,
+            source,
+            days,
+            limit,
+            context,
+            case,
+            files,
+            root,
+        } => {
+            let wanted = parse_sources(&source)?;
+            let opts = fleet::transcript::Options {
+                limit,
+                days,
+                context,
+                case_sensitive: case,
+            };
+
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+            let roots: Vec<fleet::transcript::Root> = if root.is_empty() {
+                fleet::transcript::default_roots(std::path::Path::new(&home))
+            } else {
+                // An explicit --root has no source of its own; infer it from the
+                // path so a mounted peer home still parses correctly.
+                root.iter()
+                    .map(|r| fleet::transcript::Root {
+                        source: infer_source(r),
+                        dir: std::path::PathBuf::from(r),
+                    })
+                    .collect()
+            };
+            let roots: Vec<_> = roots
+                .into_iter()
+                .filter(|r| wanted.contains(&r.source))
+                .collect();
+
+            let mut hits = fleet::transcript::search(&query, &roots, &opts)?;
+            if wanted.contains(&fleet::transcript::Source::Fleet) {
+                let db = fleet::paths::db_path();
+                hits.extend(fleet::transcript::search_fleet_db(&db, &query, &opts)?);
+            }
+            hits.sort_by(|a, b| b.ts.cmp(&a.ts));
+            hits.truncate(limit);
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&hits)?);
+                return Ok(());
+            }
+            if hits.is_empty() {
+                println!("no match for {query:?} in {}", describe_sources(&wanted));
+                return Ok(());
+            }
+            if files {
+                print_sessions(&hits);
+                return Ok(());
+            }
+            for h in &hits {
+                println!(
+                    "{:<6} {:<22} {:<10} {}",
+                    h.source,
+                    short_ts(&h.ts),
+                    h.role,
+                    h.snippet
+                );
+                println!("       {}#{}", h.session, h.line);
+            }
+            Ok(())
+        }
     }
 }
-
 // ---------------------------------------------------------------- memory
 
 pub fn memory(c: MemoryCmd, json: bool) -> Result<()> {
@@ -2675,5 +2742,224 @@ pub fn queue(c: crate::QueueCmd, json: bool) -> Result<()> {
             println!("  re-queued {n} item(s)");
             Ok(())
         }
+    }
+}
+
+// ---------------------------------------------------------------- usage
+
+/// Token usage aggregated from the ledger.
+///
+/// The ledger already records `tok=in/out` on each call; this turns that into
+/// the answer an operator actually wants — which harness and which model are
+/// spending the money — without hand-parsing JSONL.
+///
+/// A CLI harness reports no usage, so it is counted separately as "unmetered"
+/// rather than folded in as zero: a table where half the calls silently read 0
+/// tokens is a table that lies about cost.
+pub fn usage(scan: usize, json: bool) -> Result<()> {
+    use std::collections::BTreeMap;
+    let led = Ledger::default_path();
+    let rows = led.tail(None, scan)?;
+
+    // (harness, model) -> (in, out, calls, unmetered)
+    let mut by: BTreeMap<(String, String), (u64, u64, u64, u64)> = BTreeMap::new();
+    let mut total = (0u64, 0u64, 0u64, 0u64);
+
+    for e in rows.iter().filter(|e| e.kind == "call" || e.kind == "direct") {
+        let d = &e.detail;
+        // `model=` can be EMPTY (`failed model= err=\`cairn\` exited 2`), and
+        // taking the next whitespace token then yields `err=...` as if it were a
+        // model name — which is how a failed call showed up in the table as a
+        // model. A model id never contains '=', so reject anything that does.
+        let model = d
+            .split("model=")
+            .nth(1)
+            .and_then(|r| r.split_whitespace().next())
+            .filter(|t| !t.is_empty() && !t.contains('='))
+            .unwrap_or("-")
+            .to_string();
+        let harness = if e.kind == "direct" {
+            "direct".to_string()
+        } else {
+            e.subject.clone()
+        };
+        let tok = d
+            .split("tok=")
+            .nth(1)
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|pair| pair.split_once('/'))
+            .and_then(|(a, b)| Some((a.parse::<u64>().ok()?, b.parse::<u64>().ok()?)));
+
+        let slot = by.entry((harness, model)).or_default();
+        slot.2 += 1;
+        total.2 += 1;
+        match tok {
+            Some((i, o)) => {
+                slot.0 += i;
+                slot.1 += o;
+                total.0 += i;
+                total.1 += o;
+            }
+            None => {
+                slot.3 += 1;
+                total.3 += 1;
+            }
+        }
+    }
+
+    if json {
+        let out: Vec<_> = by
+            .iter()
+            .map(|((h, m), (i, o, c, u))| {
+                serde_json::json!({
+                    "harness": h, "model": m,
+                    "tokens_in": i, "tokens_out": o,
+                    "calls": c, "unmetered": u
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    if by.is_empty() {
+        println!("  no calls in the last {scan} ledger entries");
+        return Ok(());
+    }
+
+    println!(
+        "  {:<14} {:<30} {:>10} {:>10} {:>6} {:>10}",
+        "harness", "model", "tokens_in", "tokens_out", "calls", "unmetered"
+    );
+    for ((h, m), (i, o, c, u)) in &by {
+        println!(
+            "  {:<14} {:<30} {:>10} {:>10} {:>6} {:>10}",
+            fleet::runner::truncate(h, 14),
+            fleet::runner::truncate(m, 30),
+            i,
+            o,
+            c,
+            if *u > 0 {
+                u.to_string()
+            } else {
+                "-".to_string()
+            }
+        );
+    }
+    println!(
+        "  {:<14} {:<30} {:>10} {:>10} {:>6} {:>10}",
+        "TOTAL", "", total.0, total.1, total.2, total.3
+    );
+    if total.3 > 0 {
+        println!(
+            "  ({0} call(s) came from CLI harnesses, which report no usage — their cost is real \
+             but unmetered, not zero)",
+            total.3
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- transcript helpers
+
+/// Parse `--source` into the set of stores to search.
+///
+/// `all` is the default and means every store, because the whole point of the
+/// command is that you do NOT have to remember which harness said something.
+fn parse_sources(spec: &str) -> Result<Vec<fleet::transcript::Source>> {
+    use fleet::transcript::Source;
+    let all = [Source::Fleet, Source::Omp, Source::Claude, Source::Codex];
+    let spec = spec.trim();
+    if spec.is_empty() || spec.eq_ignore_ascii_case("all") {
+        return Ok(all.to_vec());
+    }
+    let mut out = Vec::new();
+    for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let src = match part.to_ascii_lowercase().as_str() {
+            "fleet" => Source::Fleet,
+            "omp" => Source::Omp,
+            "claude" => Source::Claude,
+            "codex" => Source::Codex,
+            other => bail!("unknown source `{other}` (fleet, omp, claude, codex, all)"),
+        };
+        if !out.contains(&src) {
+            out.push(src);
+        }
+    }
+    if out.is_empty() {
+        return Ok(all.to_vec());
+    }
+    Ok(out)
+}
+
+/// Which store a directory belongs to, guessed from its path.
+///
+/// Used only for an explicit `--root`, where the caller pointed at a directory
+/// and did not say what it was. A mounted peer home still carries the familiar
+/// `.../.omp/agent/sessions` shape, so the guess is reliable in practice.
+fn infer_source(dir: &str) -> fleet::transcript::Source {
+    use fleet::transcript::Source;
+    let d = dir.replace('\\', "/").to_ascii_lowercase();
+    if d.contains(".omp") {
+        Source::Omp
+    } else if d.contains(".claude") {
+        Source::Claude
+    } else if d.contains(".codex") {
+        Source::Codex
+    } else {
+        Source::Fleet
+    }
+}
+
+/// Human names for the stores being searched, for the "no match" line.
+fn describe_sources(sources: &[fleet::transcript::Source]) -> String {
+    use fleet::transcript::Source;
+    let names: Vec<&str> = sources
+        .iter()
+        .map(|s| match s {
+            Source::Fleet => "fleet",
+            Source::Omp => "omp",
+            Source::Claude => "claude",
+            Source::Codex => "codex",
+        })
+        .collect();
+    if names.len() == 4 {
+        "any store".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
+/// One line per session, with how many hits it holds.
+fn print_sessions(hits: &[fleet::transcript::Hit]) {
+    use std::collections::BTreeMap;
+    let mut by: BTreeMap<(&str, &str), (usize, &str)> = BTreeMap::new();
+    for h in hits {
+        let e = by
+            .entry((h.source, h.session.as_str()))
+            .or_insert((0, h.ts.as_str()));
+        e.0 += 1;
+        if h.ts.as_str() > e.1 {
+            e.1 = h.ts.as_str();
+        }
+    }
+    let mut rows: Vec<_> = by.into_iter().collect();
+    rows.sort_by(|a, b| b.1 .1.cmp(a.1 .1));
+    for ((source, session), (count, ts)) in rows {
+        println!("{:<6} {:<22} {:>4} hits  {}", source, short_ts(ts), count, session);
+    }
+}
+
+/// `2026-10-27T21:24:51.234Z` -> `2026-10-27 21:24`. Falls back to the input so a
+/// store with a different timestamp shape still prints something truthful.
+fn short_ts(ts: &str) -> String {
+    if ts.len() >= 16 {
+        let mut s = String::with_capacity(16);
+        for (i, c) in ts.chars().take(16).enumerate() {
+            s.push(if i == 10 { ' ' } else { c });
+        }
+        s
+    } else {
+        ts.to_string()
     }
 }

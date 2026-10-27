@@ -86,6 +86,17 @@ enum Command {
     /// The append-only ledger.
     Ledger(LedgerArgs),
 
+    /// Token usage per harness and model, from the ledger.
+    ///
+    /// The ledger records tokens per call; this answers the operator's actual
+    /// question — which harness and which model are spending the money — without
+    /// making them parse JSONL by hand.
+    Usage {
+        /// How many ledger entries back to scan.
+        #[arg(long, default_value_t = 5000)]
+        scan: usize,
+    },
+
     /// The HTTP API, for a hosted or local web app.
     Serve(ServeArgs),
 
@@ -421,6 +432,40 @@ enum SessionsCmd {
         id: String,
         #[arg(long, default_value_t = 20)]
         turns: i64,
+    },
+    /// Search every harness's transcripts — the engine's own sessions plus the
+    /// omp, [CC] and Codex stores on this machine.
+    ///
+    /// Reads the stores on demand, so nothing goes stale: a session written a
+    /// second ago is searchable. Plumbing records (a harness replaying its
+    /// whole context, including AGENTS.md) are skipped, so a query about a
+    /// standing rule returns the conversations that discussed it, not every
+    /// session that ever loaded the rule.
+    Search {
+        /// Text to look for.
+        query: String,
+        /// Where to look: `all`, or a comma-separated subset of
+        /// fleet,omp,claude,codex.
+        #[arg(long, default_value = "all")]
+        source: String,
+        /// Only sessions modified in the last N days.
+        #[arg(long)]
+        days: Option<i64>,
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+        /// Characters of context on each side of the match.
+        #[arg(long, default_value_t = 100)]
+        context: usize,
+        /// Case-sensitive match.
+        #[arg(long)]
+        case: bool,
+        /// One line per session with a hit count, instead of one line per hit.
+        #[arg(long)]
+        files: bool,
+        /// Search this directory instead of the harness defaults (repeatable).
+        /// Point it at a peer's mounted home to search another machine.
+        #[arg(long)]
+        root: Vec<String>,
     },
 }
 
@@ -981,6 +1026,7 @@ fn real_main() -> Result<()> {
         Some(Command::Selfmod(c)) => c2::selfmod(c, cli.json),
         Some(Command::Lessons(c)) => c2::lessons(c, cli.json),
         Some(Command::Ledger(a)) => c2::ledger(a, cli.json),
+        Some(Command::Usage { scan }) => c2::usage(scan, cli.json),
         Some(Command::Serve(a)) => {
             paths::ensure_dirs()?;
             api::serve(&a.host, a.port)
