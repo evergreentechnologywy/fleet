@@ -253,3 +253,58 @@ fn route_and_kind_defaults_are_sane() {
     assert!(h.models.is_empty(), "no ceiling unless declared");
     assert_eq!(h.timeout(), 1800);
 }
+
+#[test]
+fn an_alias_is_not_a_model_field_and_must_not_clamp() {
+    // The bug this pins, measured 2026-10-27: `models = ["jev/auto", "auto"]`
+    // looked like a ceiling but names only ROUTER ALIASES. The router treated it
+    // as a ceiling anyway, so every real chooser decision was rejected and
+    // replaced by the alias — 492 times in one ledger — while the reason string
+    // was rewritten to read like a normal route. The run looked routed and a
+    // fixed model was used.
+    use fleet::registry::is_model_field;
+
+    // Aliases and wildcards constrain nothing.
+    for alias in ["jev/auto", "auto", "*", "", "  "] {
+        assert!(
+            !is_model_field(alias),
+            "`{alias}` must not count as a model field"
+        );
+    }
+    // Real ids do, including provider-qualified and versioned spellings.
+    for real in [
+        "deepseek-v4.1-flash",
+        "gpt-6-luna",
+        "liquid/deepseek-v4.1-flash",
+        "step-5-preview",
+        "qwen3.8-flash",
+    ] {
+        assert!(is_model_field(real), "`{real}` must count as a model field");
+    }
+}
+
+#[test]
+fn a_ceiling_of_aliases_accepts_anything_but_a_ceiling_of_models_does_not() {
+    // The two halves must stay distinguishable: `accepts` answers "may this
+    // harness receive X", and `is_model_field` answers "does this list constrain
+    // anything". Conflating them is what produced the silent clamp.
+    use fleet::registry::{is_model_field, Registry};
+
+    let dir = std::env::temp_dir().join(format!("fleet-alias-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let p = dir.join("aliased.toml");
+    std::fs::write(
+        &p,
+        "name = \"aliased\"\nkind = \"cli\"\ncommand = \"true\"\nmodels = [\"jev/auto\", \"auto\"]\n",
+    )
+    .unwrap();
+    let reg = Registry::new(dir.clone());
+    let (hs, errs) = reg.all();
+    assert!(errs.is_empty(), "descriptor must load: {errs:?}");
+    let h = hs.iter().find(|h| h.name == "aliased").expect("loaded");
+    assert!(
+        !h.models.iter().any(|m| is_model_field(m)),
+        "an alias-only list declares no model fields"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

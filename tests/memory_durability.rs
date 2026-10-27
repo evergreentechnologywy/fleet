@@ -161,3 +161,58 @@ fn runs_record_their_outcome() {
     assert_eq!(runs[0]["task"], "do a thing");
     assert!(runs[0]["finished"].is_string());
 }
+
+#[test]
+fn a_queue_item_survives_reopen_and_a_stranded_item_is_recoverable() {
+    // The queue's entire value is durability, so the two properties that make it
+    // worth having are tested against a real file:
+    //   1. an item enqueued by one process is claimable by another (it is on disk,
+    //      not in a Vec), and
+    //   2. an item left `running` by a process that DIED is recoverable — without
+    //      that, the queue looks non-empty but has nothing pending and silently
+    //      stops.
+    let dir = std::env::temp_dir().join(format!("fleet-queue-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("fleet.db");
+
+    let id = {
+        let m = fleet::memory::Memory::open(&db).unwrap();
+        m.queue_push("do the thing", "omp", 2).unwrap()
+    };
+
+    // A DIFFERENT handle, as another process would open it.
+    let m = fleet::memory::Memory::open(&db).unwrap();
+    let claimed = m.queue_claim().unwrap().expect("an item must be claimable");
+    assert_eq!(claimed.id, id);
+    assert_eq!(claimed.task, "do the thing");
+    assert_eq!(claimed.harness, "omp");
+    assert_eq!(claimed.subagents, 2);
+    assert_eq!(claimed.status, "running");
+
+    // Claiming again finds nothing: the row is running, not pending. This is the
+    // property that stops two workers running the same item.
+    assert!(
+        m.queue_claim().unwrap().is_none(),
+        "a claimed item must not be claimable twice"
+    );
+
+    // Simulate the worker dying: the row is still `running`.
+    assert_eq!(m.queue_reap().unwrap(), 1, "reap must find the stranded item");
+    assert_eq!(
+        m.queue_claim().unwrap().map(|q| q.id),
+        Some(id),
+        "a reaped item must be claimable again"
+    );
+
+    // Finish it and confirm the outcome is durable and readable.
+    m.queue_finish(id, "s-abc", "the answer", "").unwrap();
+    let got = m.queue_get(id).unwrap().expect("still there");
+    assert_eq!(got.status, "done");
+    assert_eq!(got.answer, "the answer");
+    assert!(got.error.is_empty());
+
+    let counts = m.queue_counts().unwrap();
+    assert!(counts.iter().any(|(s, n)| s == "done" && *n == 1), "{counts:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
