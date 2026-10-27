@@ -18,3 +18,9 @@ name = "powerstation-1"
 host = "100.65.119.76"
 ssh_args = []
 notes = ""
+
+[[peer]]
+name = "zenbook-wsl"
+host = "100.112.56.110"
+ssh_args = []
+notes = ""

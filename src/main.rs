@@ -449,6 +449,9 @@ fn main() {
 }
 
 fn real_main() -> Result<()> {
+    // Before anything can need a credential: keys live in the fleet home, not in
+    // the process environment, so every entry point gets the same behaviour.
+    paths::load_env_file();
     let cli = Cli::parse();
     match cli.command {
         None => {

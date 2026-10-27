@@ -56,6 +56,8 @@ fn json_response(code: u16, body: serde_json::Value) -> Response<std::io::Cursor
 /// Serve the API on `host:port` until the process is stopped.
 pub fn serve(host: &str, port: u16) -> Result<()> {
     crate::paths::ensure_dirs()?;
+    // A service started without an EnvironmentFile still needs its keys.
+    crate::paths::load_env_file();
     let addr = format!("{host}:{port}");
     let server = Server::http(&addr).map_err(|e| anyhow::anyhow!("binding {addr}: {e}"))?;
     eprintln!(

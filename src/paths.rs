@@ -55,6 +55,42 @@ pub fn log_path() -> PathBuf {
     sub("fleet.log")
 }
 
+/// Read `$FLEET_HOME/env` into the process environment, if it exists.
+///
+/// Keys are never deployed and never written into a descriptor, so they have to
+/// live somewhere. A systemd unit can name that file with `EnvironmentFile=`,
+/// but the engine is also run directly — by `ssh host fleet run …`, by a peer
+/// driving a harness over the mesh, by a cron job — and in those cases there is
+/// no unit to do it. Loading the file here makes a key behave the same however
+/// the process started.
+///
+/// Existing environment variables always win, so a caller can override one for a
+/// single run without editing a file.
+pub fn load_env_file() {
+    let path = home().join("env");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Both `KEY=value` and `export KEY=value` are accepted, because an env
+        // file is often also sourced by a human in a shell.
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let k = k.trim();
+        if k.is_empty() || std::env::var_os(k).is_some() {
+            continue;
+        }
+        let v = v.trim().trim_matches('"').trim_matches('\'');
+        std::env::set_var(k, v);
+    }
+}
+
 /// Create every directory the engine writes to. Idempotent.
 pub fn ensure_dirs() -> std::io::Result<()> {
     for d in [home(), harness_dir(), verifier_dir(), runs_dir()] {

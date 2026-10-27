@@ -340,18 +340,81 @@ pub fn deploy(spec: &DeploySpec, dry_run: bool) -> Result<Vec<String>> {
     Ok(log)
 }
 
+/// The binary to deploy.
+///
+/// `--release` builds one and it is used. Otherwise the newest of the release
+/// and debug binaries is chosen, and the source tree is checked against it: a
+/// stale binary deploys a stale engine that looks freshly installed, which is
+/// the worst kind of failure because everything reports success. A source file
+/// newer than the binary is an error, not a warning.
 fn find_binary() -> Result<PathBuf> {
-    let candidates = [
+    let mut candidates: Vec<PathBuf> = [
         PathBuf::from("target/release/fleet"),
         PathBuf::from("target/debug/fleet"),
-        std::env::current_exe().unwrap_or_default(),
-    ];
-    for c in candidates {
-        if c.exists() {
-            return Ok(c);
+    ]
+    .into_iter()
+    .filter(|p| p.is_file())
+    .collect();
+    if candidates.is_empty() {
+        if let Ok(me) = std::env::current_exe() {
+            if me.is_file() {
+                candidates.push(me);
+            }
         }
     }
-    bail!("no built `fleet` binary found; run `cargo build --release`")
+    if candidates.is_empty() {
+        bail!("no built `fleet` binary found; run `cargo build --release`");
+    }
+    // Newest wins, so a debug build made after the last release build is used
+    // rather than silently discarded.
+    candidates.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+    let bin = candidates.pop().unwrap();
+
+    let bin_time = std::fs::metadata(&bin).and_then(|m| m.modified()).ok();
+    if let (Some(bt), Some(src)) = (bin_time, newest_source_time()) {
+        if src > bt {
+            bail!(
+                "{} is older than the newest source file. Deploying it would install a \
+                 stale engine that reports success. Run `cargo build --release` (or pass \
+                 --release) and deploy again.",
+                bin.display()
+            );
+        }
+    }
+    Ok(bin)
+}
+
+/// The newest mtime under `src/`, or `None` when the tree is not present (a
+/// deploy from an installed binary has no source to compare against).
+fn newest_source_time() -> Option<std::time::SystemTime> {
+    fn walk(dir: &std::path::Path, newest: &mut Option<std::time::SystemTime>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, newest);
+            } else if let Ok(m) = std::fs::metadata(&p).and_then(|m| m.modified()) {
+                if newest.map(|n| m > n).unwrap_or(true) {
+                    *newest = Some(m);
+                }
+            }
+        }
+    }
+    let src = std::path::Path::new("src");
+    if !src.is_dir() {
+        return None;
+    }
+    let mut newest = None;
+    walk(src, &mut newest);
+    // Cargo.toml too: a dependency change is a rebuild too.
+    if let Ok(m) = std::fs::metadata("Cargo.toml").and_then(|m| m.modified()) {
+        if newest.map(|n| m > n).unwrap_or(true) {
+            newest = Some(m);
+        }
+    }
+    newest
 }
 
 /// Every file that makes this machine's fleet what it is.
