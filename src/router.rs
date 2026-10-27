@@ -20,7 +20,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -270,7 +270,7 @@ impl Router {
 
     fn cache_get(&self, key: &str) -> Option<Decision> {
         let ttl = self.config.chooser.ttl();
-        let mut c = self.cache.lock().unwrap();
+        let mut c = self.cache.lock();
         match c.get(key) {
             Some(e) if e.at.elapsed() < ttl => {
                 let mut d = e.decision.clone();
@@ -286,7 +286,7 @@ impl Router {
     }
 
     fn cache_put(&self, key: String, d: Decision) {
-        let mut c = self.cache.lock().unwrap();
+        let mut c = self.cache.lock();
         if c.len() > 512 {
             c.clear();
         }

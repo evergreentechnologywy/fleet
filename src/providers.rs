@@ -31,7 +31,15 @@ pub struct Provider {
     /// OpenAI-compatible base URL, e.g. `https://api.example.ai/v1`.
     pub base_url: String,
     /// Env var holding the key. Never the key itself.
+    ///
+    /// Kept as the simple case: a provider with `key_env` and no
+    /// `[provider.credential]` behaves exactly as it always did.
+    #[serde(default)]
     pub key_env: String,
+    /// Where the credential actually comes from. Absent means `key_env`, which
+    /// keeps every existing descriptor valid.
+    #[serde(default)]
+    pub credential: Option<crate::credential::Source>,
     /// Optional second credential this provider needs (an org id, a project).
     #[serde(default)]
     pub extra: HashMap<String, String>,
@@ -73,11 +81,34 @@ impl Provider {
         self.models.is_empty() || self.models.iter().any(|m| m == model || m == "*")
     }
 
-    /// Resolve the key from the environment. Returns `None` when unset, which
-    /// is a reported condition, not an error: a provider with no key is simply
-    /// unavailable, like a harness with no binary.
+    /// The credential source, defaulting to the env var so an existing
+    /// descriptor keeps working untouched.
+    pub fn source(&self) -> crate::credential::Source {
+        match &self.credential {
+            Some(s) => s.clone(),
+            None => crate::credential::Source::Env {
+                var: self.key_env.clone(),
+            },
+        }
+    }
+
+    /// Resolve the key. Returns `None` when the source is legitimately empty,
+    /// which is a reported condition, not an error: a provider with no key is
+    /// simply unavailable, like a harness with no binary.
+    ///
+    /// `force` asks the source again rather than reusing a cached value. That is
+    /// what makes a rejected OAuth token recoverable — the whole point of a
+    /// broker is that a token can be refreshed.
+    pub fn key_with(&self, creds: &crate::credential::Credentials, force: bool) -> Result<Option<String>> {
+        creds.resolve(&self.name, &self.source(), force)
+    }
+
+    /// The simple form, for listings and probes.
     pub fn key(&self) -> Option<String> {
-        std::env::var(&self.key_env).ok().filter(|k| !k.is_empty())
+        crate::credential::Credentials::new()
+            .resolve(&self.name, &self.source(), false)
+            .ok()
+            .flatten()
     }
 
     pub fn available(&self) -> bool {
@@ -90,6 +121,12 @@ impl Provider {
         let Some(key) = self.key() else {
             return Vec::new();
         };
+        self.env_with_key(&key)
+    }
+
+    /// The same environment, for a key already resolved (possibly forced).
+    pub fn env_with_key(&self, key: &str) -> Vec<(String, String)> {
+        let key = key.to_string();
         let upper = self.name.to_ascii_uppercase().replace('-', "_");
         let mut v = vec![
             (format!("FLEET_PROVIDER_{upper}_URL"), self.base_url.clone()),
@@ -231,16 +268,33 @@ impl Providers {
 
     /// Everything a CLI harness needs at call time: the allowed providers'
     /// env, plus a compact inventory it can read to discover what it has.
-    pub fn env_for(&self, harness: &str, denies: &[String]) -> Vec<(String, String)> {
+    ///
+    /// `force` re-resolves dynamic sources (an OAuth broker, a vault command),
+    /// which is how a rotated token reaches a harness after a rejection.
+    pub fn env_for_forced(
+        &self,
+        harness: &str,
+        denies: &[String],
+        creds: &crate::credential::Credentials,
+        force: bool,
+    ) -> Vec<(String, String)> {
         let allowed = self.for_harness(harness, denies);
         let mut out = Vec::new();
         for p in &allowed {
-            out.extend(p.env());
+            match p.key_with(creds, force) {
+                Ok(Some(k)) => out.extend(p.env_with_key(&k)),
+                // A source that fails is reported once, here, rather than
+                // silently producing a harness that cannot authenticate.
+                Ok(None) => {}
+                Err(e) => eprintln!("fleet: provider `{}` credential: {e}", p.name),
+            }
         }
         // The primary provider wins any conflict by being applied last, which
         // matters because each provider exports the generic OPENAI_* names.
         if let Some(primary) = allowed.last() {
-            out.extend(primary.env());
+            if let Ok(Some(k)) = primary.key_with(creds, force) {
+                out.extend(primary.env_with_key(&k));
+            }
         }
         let inventory: Vec<serde_json::Value> = allowed
             .iter()
@@ -259,6 +313,11 @@ impl Providers {
             serde_json::to_string(&inventory).unwrap_or_else(|_| "[]".into()),
         ));
         out
+    }
+
+    /// Convenience for a caller with no shared resolver.
+    pub fn env_for(&self, harness: &str, denies: &[String]) -> Vec<(String, String)> {
+        self.env_for_forced(harness, denies, &crate::credential::Credentials::new(), false)
     }
 
     /// Block rules in both directions, for `fleet providers check`.
@@ -320,6 +379,7 @@ pub fn detect_from_env() -> Vec<Provider> {
             name: name.to_string(),
             base_url: url.to_string(),
             key_env: env.to_string(),
+            credential: None,
             extra: Default::default(),
             models: vec!["*".into()],
             block: Vec::new(),

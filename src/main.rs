@@ -16,7 +16,7 @@ use cmd2 as c2;
 #[command(
     name = "fleet",
     version,
-    about = "A harness for harnesses: route one task across many agent CLIs, each choosing its own model per call.",
+    about = "A harness for harnesses: route one task across many agent CLIs, each choosing its own harness and model per call based on their strengths.",
     long_about = "fleet is an orchestrator over harnesses. A harness is a TOML file in \
                   $FLEET_HOME/harnesses — add one by writing a file, remove one by deleting \
                   it, and neither needs a restart. Each call asks a chooser (Jev, or any \
@@ -77,8 +77,16 @@ enum Command {
     /// One-line deploy to a server.
     Deploy(DeployArgs),
 
+    /// Deploy targets: plugins that teach `deploy` a new platform.
+    #[command(subcommand)]
+    Targets(TargetsCmd),
+
     /// First run: pick a chooser, pick a provider, detect harnesses.
     Onboard(OnboardArgs),
+
+    /// Credentials: inspect where a key comes from, and force a refresh.
+    #[command(subcommand)]
+    Credential(CredentialCmd),
 
     /// Configuration.
     #[command(subcommand)]
@@ -408,6 +416,27 @@ struct DeployArgs {
     dry_run: bool,
 }
 
+#[derive(Subcommand, Debug)]
+enum TargetsCmd {
+    /// List the targets available, built-in and plugin.
+    List,
+    /// Install a target directory (or a bare target.toml).
+    Add { path: PathBuf },
+    /// Remove a plugin target.
+    Rm { scheme: String },
+    /// Write a worked example target you can copy.
+    Example,
+    /// Ask a target whether it can run here, and show what it would do.
+    Probe {
+        /// The target, as it would be written: scheme://host
+        target: String,
+        #[arg(long, default_value_t = 8787)]
+        port: u16,
+    },
+    /// Where targets live.
+    Dir,
+}
+
 #[derive(Args, Debug)]
 struct OnboardArgs {
     /// Non-interactive: accept the detected defaults.
@@ -422,6 +451,29 @@ struct OnboardArgs {
     /// Env var holding the provider key.
     #[arg(long)]
     key_env: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum CredentialCmd {
+    /// Resolve every provider's credential and report the source. Never prints
+    /// a value — only whether one was obtained and where it came from.
+    Check {
+        /// One provider; omit for all of them.
+        provider: Option<String>,
+    },
+    /// Forget a cached credential and resolve it again. This is what recovers a
+    /// rotated OAuth token without restarting anything.
+    Refresh {
+        /// One provider; omit for all of them.
+        provider: Option<String>,
+    },
+    /// Print a credential's value. For piping into another tool, not for reading.
+    Show {
+        provider: String,
+        /// Print only the value, with no label.
+        #[arg(long)]
+        raw: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -482,6 +534,8 @@ fn real_main() -> Result<()> {
             api::serve(&a.host, a.port)
         }
         Some(Command::Deploy(a)) => c2::deploy(a),
+        Some(Command::Targets(c)) => c2::deploy_targets(c, cli.json),
+        Some(Command::Credential(c)) => c2::credential(c, cli.json),
         Some(Command::Config(c)) => c2::config(c, cli.json),
         Some(Command::Paths) => {
             c2::print_paths();

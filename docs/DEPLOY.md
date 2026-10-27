@@ -29,6 +29,54 @@ $ fleet deploy --to file:./bundle        # then hand ./bundle to anyone
 $ sh bundle/install.sh                   # on the server
 ```
 
+## Plugin targets (`fleet targets`)
+
+A built-in target cannot know the differences between your machines. A plugin
+target is a small directory with a `target.toml` and a script; the engine hands it
+the built binary, the descriptor bundle, and the request as JSON on stdin, and the
+target decides how to move them.
+
+```console
+$ fleet targets list                     # what is installed, and where
+$ fleet targets add ./deploy-targets     # install a directory of targets
+$ fleet targets probe fleetnode://host   # is it reachable, and will this work?
+$ fleet deploy --to fleetnode://host --port 8787
+```
+
+The verbs are `probe`, `plan`, and `deploy`. `probe` must answer with JSON
+`{"ready":true|false,"detail":"…"}` and a matching exit status; `plan` lists the
+commands without running them; `deploy` does the work.
+
+### What a target has to get right
+
+Each of these was a real failure, not a hypothetical:
+
+- **The binary must match the peer's platform.** An ELF uploaded to a Windows
+  desk fails at exec time — after the deploy reported success — with *"not
+  compatible with the version of Windows you are running"*. Detect the peer's
+  platform, pick the right artifact (`cargo build --release --target …`), and
+  refuse with a named reason when none exists.
+- **`scp` expands nothing.** `%TEMP%/fleet.exe` as a destination fails with *"No
+  such file or directory"*, which reads like a missing directory. Use a
+  **relative** destination: it resolves against the remote home on both
+  platforms.
+- **Stdin redirection over `ssh` does not work to `cmd.exe`** (*"Input
+  redirection is not supported"*). Stream files with `scp`.
+- **Stage where you can write, not where you want to install.** `/tmp` is not
+  writable by a non-root login on many nodes; the user's home always is. Install
+  with elevation afterwards.
+- **A running service holds its own binary.** Windows refuses to overwrite or
+  delete an open file, but a *rename* is allowed — so stop it and move the old
+  file aside. Check the result; otherwise a locked file leaves the old binary in
+  place and the deploy reports success.
+- **Start it in a way that outlives the connection.** `start /b` over ssh dies
+  with the session. On Windows, `Win32_Process.Create` (WMI) is detached and
+  survives; a scheduled task does not, and `/ru SYSTEM` changes what
+  `%USERPROFILE%` means.
+- **Prove it, don't assume it.** End the deploy by running the installed binary
+  and hitting `/health`. A deploy that leaves nothing listening is not finished,
+  whatever the exit codes said.
+
 ## The install script
 
 `install.sh` in this repo is the standalone path, for a host you cannot reach

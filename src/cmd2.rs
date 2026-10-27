@@ -7,7 +7,7 @@ use fleet::ledger::Ledger;
 use fleet::memory::Memory;
 
 use crate::{
-    ConfigCmd, DeployArgs, LedgerArgs, LessonsCmd, MemoryCmd, OnboardArgs, PeersCmd, PluginsCmd,
+    ConfigCmd, CredentialCmd, TargetsCmd, DeployArgs, LedgerArgs, LessonsCmd, MemoryCmd, OnboardArgs, PeersCmd, PluginsCmd,
     SelfmodCmd, SessionsCmd,
 };
 
@@ -682,6 +682,7 @@ pub fn onboard(a: OnboardArgs, json: bool) -> Result<()> {
             extra: Default::default(),
             models: vec!["*".into()],
             block: Vec::new(),
+            credential: None,
             enabled: true,
             notes: "from onboarding".into(),
         })?;
@@ -782,6 +783,7 @@ pub fn onboard(a: OnboardArgs, json: bool) -> Result<()> {
     println!("  fleet harness list");
     println!("  fleet serve            # local web API on :8787");
     println!("  fleet deploy --to ssh://you@host --run   # one line to a server");
+    println!("  fleet targets list                       # deploy targets, incl. plugins");
     if std::env::var("FLEET_SKIP_SELFCHECK").is_err() {
         let _ = self_check(&reg);
     }
@@ -876,6 +878,8 @@ pub fn help_text(reg: &fleet::registry::Registry) -> String {
          Manage:\n\
          \x20 fleet harness list | new | add | rm\n\
          \x20 fleet providers list | add | check\n\
+         \x20 fleet credential check | refresh   # where a key comes from, incl. OAuth\n\
+         \x20 fleet targets list | add | example # deploy targets as plugins\n\
          \x20 fleet plugins list | example\n\
          \x20 fleet peers list | discover | send\n\
          \x20 fleet sessions list | show\n\
@@ -884,4 +888,224 @@ pub fn help_text(reg: &fleet::registry::Registry) -> String {
          `fleet --help` for everything.\n",
     );
     s
+}
+
+// ------------------------------------------------------- deploy targets
+
+/// Deploy targets are plugins: the built-in schemes cover a fleet's own
+/// machines, and anything else is a script someone can write in twenty lines.
+pub fn deploy_targets(c: TargetsCmd, json: bool) -> Result<()> {
+    use fleet::deploy_targets::{self, Targets};
+    let t = Targets::default_dir();
+    match c {
+        TargetsCmd::List => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&t.all())?);
+                return Ok(());
+            }
+            println!("built-in targets:");
+            for (scheme, what) in [
+                ("ssh", "stream the binary over ssh, install, start systemd"),
+                ("tailscale", "same, over a tailnet name"),
+                ("reason", "reason exec a tarball onto a Reason peer"),
+                ("docker", "print the docker build/run pair for a context"),
+                ("file", "write a bundle and install.sh, touch no server"),
+            ] {
+                println!("  {scheme:<12} {what}");
+            }
+            let all = t.all();
+            println!("\nplugin targets: {}  ({})", all.len(), t.dir().display());
+            for s in &all {
+                println!(
+                    "  {:<12} {}{}",
+                    s.scheme,
+                    s.description,
+                    if s.example.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n               e.g. {}", s.example)
+                    }
+                );
+            }
+            if all.is_empty() {
+                println!("  (none) — `fleet targets example` writes one");
+            }
+            Ok(())
+        }
+        TargetsCmd::Add { path } => {
+            let s = deploy_targets::install(&path)?;
+            println!(
+                "installed target `{}` — `fleet deploy --to {}://…` works now",
+                s.scheme, s.scheme
+            );
+            Ok(())
+        }
+        TargetsCmd::Rm { scheme } => {
+            let d = deploy_targets::remove(&scheme)?;
+            println!("removed {}", d.display());
+            Ok(())
+        }
+        TargetsCmd::Example => {
+            let dir = t.dir().join("myssh");
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join("target.toml"), deploy_targets::EXAMPLE_SPEC)?;
+            let script = dir.join("deploy.sh");
+            std::fs::write(&script, deploy_targets::EXAMPLE_SCRIPT)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
+            }
+            println!("wrote {} — edit it, then `fleet deploy --to myssh://host`", dir.display());
+            Ok(())
+        }
+        TargetsCmd::Probe { target, port } => {
+            let (scheme, dest) = target
+                .split_once("://")
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .unwrap_or_else(|| {
+                    let s = target.split("://").next().unwrap_or("").to_string();
+                    (s, String::new())
+                });
+            let spec = t.get(&scheme).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no plugin target named `{scheme}`; built-in schemes are ssh, tailscale, \
+                     reason, docker, file"
+                )
+            })?;
+            let req = deploy_targets::Request {
+                scheme: scheme.clone(),
+                host: dest,
+                port,
+                prefix: "/usr/local".into(),
+                binary: std::env::current_exe()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                bundle: String::new(),
+                env: Default::default(),
+            };
+            let probe = t.probe(&spec, &req);
+            let plan = t.plan(&spec, &req);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "scheme": scheme, "ready": probe.ready, "detail": probe.detail,
+                        "commands": plan.commands, "url": plan.url,
+                    }))?
+                );
+                return Ok(());
+            }
+            println!(
+                "{scheme}: {} — {}",
+                if probe.ready { "ready" } else { "not ready" },
+                probe.detail
+            );
+            for c in &plan.commands {
+                println!("  {c}");
+            }
+            if !plan.url.is_empty() {
+                println!("  api: {}", plan.url);
+            }
+            Ok(())
+        }
+        TargetsCmd::Dir => {
+            println!("{}", t.dir().display());
+            Ok(())
+        }
+    }
+}
+
+// ------------------------------------------------------- credentials
+
+/// Inspect and refresh credentials. A provider may be an env var, a vault
+/// command, or an OAuth login; this is how an operator sees which, and how a
+/// rotated token is picked up without restarting a service.
+pub fn credential(c: CredentialCmd, json: bool) -> Result<()> {
+    let ps = fleet::providers::Providers::default_file();
+    let creds = fleet::credential::Credentials::new();
+    let targets: Vec<fleet::providers::Provider> = match provider_filter(&c) {
+        Some(name) => vec![ps
+            .get(&name)
+            .ok_or_else(|| anyhow::anyhow!("no provider named `{name}`"))?],
+        None => ps.all(),
+    };
+    if targets.is_empty() {
+        eprintln!("no providers declared in {}", ps.path().display());
+        return Ok(());
+    }
+    match c {
+        CredentialCmd::Check { .. } => {
+            let mut rows = Vec::new();
+            for p in &targets {
+                let src = p.source();
+                let (ok, detail) = match p.key_with(&creds, false) {
+                    Ok(Some(_)) => (true, "resolved".to_string()),
+                    Ok(None) => (false, "source is empty".to_string()),
+                    Err(e) => (false, e.to_string()),
+                };
+                rows.push((p.name.clone(), src.label(), ok, detail));
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &rows
+                            .iter()
+                            .map(|(n, s, ok, d)| serde_json::json!({
+                                "provider": n, "source": s, "ok": ok, "detail": d
+                            }))
+                            .collect::<Vec<_>>()
+                    )?
+                );
+                return Ok(());
+            }
+            for (n, s, ok, d) in rows {
+                println!(
+                    "  {:<16} {:<26} {:<10} {}",
+                    n,
+                    s,
+                    if ok { "ok" } else { "FAILED" },
+                    d
+                );
+            }
+            Ok(())
+        }
+        CredentialCmd::Refresh { .. } => {
+            for p in &targets {
+                let src = p.source();
+                creds.invalidate(&src);
+                match p.key_with(&creds, true) {
+                    Ok(Some(_)) => println!("  {:<16} refreshed ({})", p.name, src.label()),
+                    Ok(None) => println!("  {:<16} source is empty ({})", p.name, src.label()),
+                    Err(e) => println!("  {:<16} FAILED: {e}", p.name),
+                }
+            }
+            Ok(())
+        }
+        CredentialCmd::Show { raw, .. } => {
+            let p = &targets[0];
+            let src = p.source();
+            match p.key_with(&creds, false)? {
+                Some(v) => {
+                    if raw {
+                        println!("{v}");
+                    } else {
+                        println!("{}: {} ({})", p.name, v, src.label());
+                    }
+                    Ok(())
+                }
+                None => anyhow::bail!("no credential for `{}` ({})", p.name, src.label()),
+            }
+        }
+    }
+}
+
+/// Which provider a credential command refers to, when one was named.
+fn provider_filter(c: &CredentialCmd) -> Option<String> {
+    match c {
+        CredentialCmd::Check { provider }
+        | CredentialCmd::Refresh { provider } => provider.clone(),
+        CredentialCmd::Show { provider, .. } => Some(provider.clone()),
+    }
 }

@@ -15,7 +15,8 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use crate::lessons;
 use crate::memory::{Memory, Turn};
@@ -68,6 +69,29 @@ struct Job {
     harness: Harness,
     prompt: String,
 }
+
+/// Does this error look like a rejected credential rather than a real failure?
+///
+/// Matched on the body, not only the status: a 401 arrives as a bare status in
+/// some clients and as a JSON message in others, and a `403` can be a quota
+/// problem while a `401` is nearly always the credential. Retrying is bounded to
+/// one attempt, so a false positive costs one extra call and no loop.
+pub fn looks_like_auth_failure(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    const MARKERS: [&str; 9] = [
+        "401",
+        "unauthorized",
+        "invalid_api_key",
+        "invalid api key",
+        "authentication",
+        "token expired",
+        "expired token",
+        "invalid_grant",
+        "credential",
+    ];
+    MARKERS.iter().any(|k| m.contains(k))
+}
+
 /// Build the prompt for one step: the brief, the memory briefing, the lesson
 /// briefing, and — for a pipeline — what came before.
 fn compose_prompt(
@@ -265,6 +289,64 @@ fn run_job(
         &env,
         &mut sink,
     );
+
+    // An OAuth access token expires; a rotating refresh token means the cached
+    // one is *the* thing that goes stale. When a call is rejected for
+    // authentication, the only correct response is to ask the broker again and
+    // retry once — otherwise every run after the token's lifetime fails with a
+    // 401 that reads as a misconfiguration.
+    let res = match res {
+        Err(e) if looks_like_auth_failure(&e.to_string()) && primary.is_some() => {
+            let provider = primary.as_ref().unwrap();
+            if provider.source().is_dynamic() {
+                ledger.log(
+                    "credential",
+                    run_id,
+                    session,
+                    &job.harness.name,
+                    &format!(
+                        "auth rejected with a {} credential; re-resolving and retrying once",
+                        provider.source().label()
+                    ),
+                    false,
+                );
+                let creds = crate::credential::Credentials::new();
+                creds.invalidate(&provider.source());
+                let mut retry_env = env.clone();
+                if let Ok(Some(fresh)) = provider.key_with(&creds, true) {
+                    // Replace the stale values rather than appending: a child
+                    // inherits the LAST assignment of a variable, so appending
+                    // would work, but leaving the stale copy in the list makes
+                    // the transcript misleading.
+                    let fresh_pairs = provider.env_with_key(&fresh);
+                    let names: std::collections::HashSet<String> =
+                        fresh_pairs.iter().map(|(k, _)| k.clone()).collect();
+                    retry_env.retain(|(k, _)| !names.contains(k));
+                    retry_env.extend(fresh_pairs);
+                    ledger.log(
+                        "credential",
+                        run_id,
+                        session,
+                        &job.harness.name,
+                        "fresh credential obtained; retrying",
+                        true,
+                    );
+                }
+                crate::runner::call(
+                    &job.harness,
+                    &prompt,
+                    &d.model,
+                    &d.effort,
+                    &work,
+                    &retry_env,
+                    &mut sink,
+                )
+            } else {
+                Err(e)
+            }
+        }
+        other => other,
+    };
 
     match res {
         Ok(text) => {
@@ -668,14 +750,14 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                         let verbose = opts.verbose;
                         handles.push(std::thread::spawn(move || {
                             let o = run_job(&j, &router, &session, &run_id, &db, verbose, &led);
-                            out.lock().unwrap().push(o);
+                            out.lock().push(o);
                         }));
                     }
                     for h in handles.drain(..) {
                         let _ = h.join();
                     }
                 }
-                let mut got = results.lock().unwrap().clone();
+                let mut got = results.lock().clone();
                 // Deterministic order: plan order, not completion order.
                 got.sort_by_key(|o| {
                     plan.steps

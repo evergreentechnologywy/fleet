@@ -1,17 +1,13 @@
 name = "codex"
 description = "Codex CLI: strong single-shot reasoning and review"
 kind = "cli"
-
 command = "codex"
-# `exec` is the non-interactive door; the prompt is a positional argument.
 args = ["exec", "--skip-git-repo-check", "{prompt}"]
 model_flag = ["-m", "{model}"]
 prompt_on_stdin = false
-
 route = "jev"
 models = ["*"]
 effort = "high"
-
 tags = ["code", "review", "reason"]
 priority = 80
 cost_hint = 0.08

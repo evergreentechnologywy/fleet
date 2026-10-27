@@ -1,21 +1,28 @@
-# Providers are fleet-wide: declare once, every harness can use it.
-# A key is always named, never written, so this file stays publishable.
-#
-# [[provider]]
-# name = "myprovider"
-# base_url = "https://api.myprovider.ai/v1"
-# key_env = "MYPROVIDER_API_KEY"
-# models = ["*"]
-# # Harnesses that must never receive it:
-# block = []
+# The fleet's provider set. A key is always an env var NAME or a broker command,
+# never a value: this file is safe to hold in git.
 
 [[provider]]
 name = "tokenbroker"
 base_url = "https://api.thetokenbroker.ai/v1"
 key_env = "TB_API_KEY"
 models = ["*"]
-block = []
 enabled = true
-notes = "detected from the environment at onboarding"
+notes = "fleet main lane"
 
-[provider.extra]
+# An OAuth provider: the credential is a login managed by omp's broker, so there
+# is no long-lived key to rotate. `fleet credential refresh` re-resolves it, and
+# a rejected call re-resolves it automatically.
+[[provider]]
+name = "muse"
+base_url = "https://api.muse.example/v1"
+key_env = ""
+models = ["*"]
+enabled = true
+notes = "OAuth via the omp broker"
+
+[provider.credential]
+kind = "oauth"
+broker = "omp"
+provider = "muse-code"
+ttl_s = 300
+json_field = "oauthAccessToken"

@@ -1,5 +1,3 @@
-# A direct provider endpoint: no CLI in between. The model is Jev's decision
-# per call, which is what makes the fleet's chooser authoritative even here.
 name = "tokenbroker"
 description = "Direct tokenbroker endpoint; model chosen by the chooser per call"
 kind = "openai-compat"

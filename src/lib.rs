@@ -18,13 +18,16 @@
 //! * [`memory`] — instant durable shared memory and full session transcripts.
 //! * [`lessons`] — the self-improvement loop, written from evidence.
 //! * [`selfmod`] — verifier-gated self-modification; the ledger is truth.
-//! * [`deploy`] — one line to a server.
+//! * [`credential`] — where a key comes from, including OAuth brokers.
+//! * [`deploy`] — one line to a server, with targets that are plugins.
 //! * [`api`] — the same engine over HTTP.
 //! * [`webapp`] — a single embedded page that drives that API.
 
 pub mod api;
 pub mod config;
+pub mod credential;
 pub mod deploy;
+pub mod deploy_targets;
 pub mod engine;
 pub mod ledger;
 pub mod lessons;

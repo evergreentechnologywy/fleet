@@ -89,6 +89,7 @@
   <button data-tab="harnesses">Harnesses</button>
   <button data-tab="sessions">Sessions</button>
   <button data-tab="memory">Memory</button>
+  <button data-tab="creds">Credentials</button>
   <button data-tab="engine">Engine</button>
 </nav>
 
@@ -167,6 +168,26 @@ base_url = "https://api.example.ai/v1"'></textarea>
     <div id="memOut"></div>
   </section>
 
+  <!-- ------------------------------------------------------------ credentials -->
+  <section id="tab-creds">
+    <div class="card">
+      <div class="row"><strong>Credentials</strong>
+        <span class="dim">where each provider's key comes from — never the value</span>
+        <button class="ghost" id="reloadC" style="margin-left:auto">reload</button></div>
+      <div class="hint">An <span class="mono">oauth:</span> source resolves through a broker
+        (e.g. <span class="mono">omp token &lt;provider&gt;</span>). Refresh re-resolves it —
+        which is how a rotated token is picked up without a restart.</div>
+    </div>
+    <div id="creds" style="margin-bottom:14px"></div>
+    <div class="card">
+      <div class="row"><strong>Deploy targets</strong>
+        <span class="dim">built-in, plus any plugin target installed here</span></div>
+      <div class="hint">A target is a script: <span class="mono">fleet targets example</span>
+        writes a working one. One line to a server that nobody compiled support for.</div>
+      <div id="targets" style="margin-top:10px"></div>
+    </div>
+  </section>
+
   <!-- -------------------------------------------------------------- engine -->
   <section id="tab-engine">
     <div class="grid2">
@@ -222,6 +243,7 @@ $("#nav").addEventListener("click", (e) => {
   if (b.dataset.tab === "sessions") loadSessions();
   if (b.dataset.tab === "memory") loadMemory();
   if (b.dataset.tab === "engine") loadEngine();
+  if (b.dataset.tab === "creds") loadCreds();
   if (b.dataset.tab === "harnesses") loadHarnesses();
 });
 
@@ -398,6 +420,51 @@ async function loadMemory() {
 $("#memSearch").addEventListener("click", loadMemory);
 $("#memList").addEventListener("click", loadMemory);
 $("#memq").addEventListener("keydown", (e) => { if (e.key === "Enter") loadMemory(); });
+
+// ---- credentials and targets ----------------------------------------------
+async function loadCreds() {
+  try {
+    const d = await api("/v1/credentials");
+    const rows = (d.credentials || []).map(c => `
+      <tr>
+        <td class="mono">${esc(c.provider)}</td>
+        <td class="mono dim">${esc(c.source)}</td>
+        <td class="${c.ok ? "ok" : "bad"}">${c.ok ? "resolved" : "FAILED"}</td>
+        <td class="dim">${esc(c.detail)}</td>
+        <td style="text-align:right">${c.dynamic
+          ? `<button class="ghost" data-refresh="${esc(c.provider)}">refresh</button>`
+          : '<span class="dim">static</span>'}</td>
+      </tr>`).join("");
+    $("#creds").innerHTML = `<div class="card">${
+      rows ? `<table><thead><tr><th>provider</th><th>source</th><th></th><th>detail</th><th></th></tr></thead>
+             <tbody>${rows}</tbody></table>` : '<span class="dim">no providers declared</span>'
+    }</div>`;
+    document.querySelectorAll("button[data-refresh]").forEach(b =>
+      b.addEventListener("click", async () => {
+        b.textContent = "…";
+        await api("/v1/credentials/refresh", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ provider: b.dataset.refresh }),
+        });
+        loadCreds();
+      }));
+  } catch (e) {
+    $("#creds").innerHTML = `<div class="card bad">${esc(e.message)}</div>`;
+  }
+  try {
+    const t = await api("/v1/targets");
+    const builtin = (t.builtin || []).map(s =>
+      `<tr><td class="mono">${esc(s)}</td><td class="dim">built-in</td><td class="dim"></td></tr>`).join("");
+    const plug = (t.plugin || []).map(s => `
+      <tr><td class="mono">${esc(s.scheme)}</td><td class="dim">plugin</td>
+          <td class="dim">${esc(s.description)}</td></tr>
+      ${s.example ? `<tr><td></td><td></td><td class="mono dim">${esc(s.example)}</td></tr>` : ""}`).join("");
+    $("#targets").innerHTML = `<table><tbody>${builtin}${plug}</tbody></table>`;
+  } catch (e) {
+    $("#targets").innerHTML = `<span class="bad">${esc(e.message)}</span>`;
+  }
+}
+$("#reloadC").addEventListener("click", loadCreds);
 
 // ---- engine ---------------------------------------------------------------
 async function loadEngine() {

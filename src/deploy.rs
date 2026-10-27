@@ -19,7 +19,7 @@
 //! vars, and the remote host is expected to have those env vars already, exactly
 //! like every other fleet node.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -32,6 +32,9 @@ pub enum Target {
     Reason,
     Docker,
     File,
+    /// A scheme provided by a plugin under `$FLEET_HOME/deploy-targets/`. The
+    /// engine ships the common cases; anything else is a script.
+    Plugin,
 }
 
 impl Target {
@@ -53,6 +56,14 @@ impl Target {
         }
         if let Some(rest) = s.strip_prefix("file:") {
             return Ok((Target::File, rest.to_string(), 0));
+        }
+        // A scheme this build does not know may be a plugin target, so it is
+        // reported as a distinct variant rather than rejected here.
+        if let Some((scheme, rest)) = s.split_once("://") {
+            if !scheme.is_empty() && rest.is_empty() {
+                bail!("`{scheme}://` needs a destination");
+            }
+            return Ok((Target::Plugin, s.to_string(), 0));
         }
         // Bare host: assume ssh. That is the common case and it keeps the
         // command short, which is the entire point of this module.
@@ -120,6 +131,24 @@ pub fn one_liner(spec: &DeploySpec) -> String {
         Ok((Target::File, dir, _)) => format!(
             "fleet deploy --to file:{dir}   # writes a bundle + install.sh, no server touched"
         ),
+        Ok((Target::Plugin, raw, _)) => {
+            let scheme = raw.split("://").next().unwrap_or("");
+            match crate::deploy_targets::Targets::default_dir().get(scheme) {
+                Some(t) => format!(
+                    "fleet deploy --to {raw} --run --port {port}   # {} plugin target{}",
+                    scheme,
+                    if t.description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", t.description)
+                    }
+                ),
+                None => format!(
+                    "# no deploy target named `{scheme}`. install one with \
+                     `fleet targets add <dir>`, or see `fleet targets list`"
+                ),
+            }
+        }
         Err(e) => format!("# invalid target: {e}"),
     }
 }
@@ -159,6 +188,9 @@ pub fn deploy(spec: &DeploySpec, dry_run: bool) -> Result<Vec<String>> {
     } else {
         find_binary()?
     };
+    // Absolute, always: a plugin target may run in its own directory, where a
+    // relative path resolves to nothing and the failure reads as a missing file.
+    let bin = std::fs::canonicalize(&bin).unwrap_or(bin);
     log.push(format!("binary: {}", bin.display()));
 
     // The bundle is the binary plus every descriptor, so a remote host ends up
@@ -166,7 +198,9 @@ pub fn deploy(spec: &DeploySpec, dry_run: bool) -> Result<Vec<String>> {
     let bundle_dir = crate::paths::home().join("bundle");
     std::fs::create_dir_all(&bundle_dir)?;
     let assets = collect_assets()?;
-    if dry_run {
+    // A plugin target is asked for its own plan below, so the early return only
+    // covers the built-in schemes.
+    if dry_run && target != Target::Plugin {
         log.push(format!(
             "bundle: {} files -> {}",
             assets.len(),
@@ -336,8 +370,124 @@ pub fn deploy(spec: &DeploySpec, dry_run: bool) -> Result<Vec<String>> {
                 tarball.display()
             ));
         }
+        Target::Plugin => {
+            // The scheme names a plugin target. The engine stages everything the
+            // target needs — the built binary and the descriptor bundle — and the
+            // target decides how to move them, because only it knows the platform.
+            let (scheme, dest) = host
+                .split_once("://")
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .unwrap_or_else(|| (host.clone(), String::new()));
+            let targets = crate::deploy_targets::Targets::default_dir();
+            let spec = targets.get(&scheme).ok_or_else(|| {
+                anyhow!(
+                    "no deploy target named `{scheme}` in {}. See `fleet targets list`, \
+                     or install one with `fleet targets add <dir>`.",
+                    targets.dir().display()
+                )
+            })?;
+
+            let bundle = if assets.is_empty() {
+                PathBuf::new()
+            } else {
+                let t = write_bundle("bundle", &assets)?;
+                std::fs::canonicalize(&t).unwrap_or(t)
+            };
+
+            let mut env = std::collections::HashMap::new();
+            for k in [
+                "HOME",
+                "PATH",
+                "USER",
+                "FLEET_SSH_KEY",
+                "SSH_AUTH_SOCK",
+                "AWS_PROFILE",
+                "AWS_REGION",
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                "KUBECONFIG",
+                "DOCKER_HOST",
+                "DIGITALOCEAN_TOKEN",
+                "HCLOUD_TOKEN",
+                "LINODE_TOKEN",
+                "VULTR_API_KEY",
+                "CLOUDFLARE_API_TOKEN",
+                "GITHUB_TOKEN",
+                // A target may need to find the crate's cross-builds, which the
+                // installed binary's own path cannot reveal.
+                "FLEET_SOURCE_DIR",
+                "FLEET_BINARY_LINUX",
+                "FLEET_BINARY_WINDOWS",
+                "FLEET_BINARY_DARWIN",
+            ] {
+                if let Ok(v) = std::env::var(k) {
+                    env.insert(k.to_string(), v);
+                }
+            }
+            if !env.contains_key("FLEET_SOURCE_DIR") {
+                if let Some(dir) = source_dir() {
+                    env.insert("FLEET_SOURCE_DIR".into(), dir.to_string_lossy().to_string());
+                }
+            }
+            let req = crate::deploy_targets::Request {
+                scheme: scheme.clone(),
+                host: dest.clone(),
+                port,
+                prefix: prefix.clone(),
+                binary: bin.to_string_lossy().to_string(),
+                bundle: bundle.to_string_lossy().to_string(),
+                env,
+            };
+
+            if dry_run {
+                let plan = targets.plan(&spec, &req);
+                log.push(format!("target: {scheme} ({})", spec.description));
+                for c in &plan.commands {
+                    log.push(format!("  {c}"));
+                }
+                if !plan.url.is_empty() {
+                    log.push(format!("api: {}", plan.url));
+                }
+                return Ok(log);
+            }
+
+            log.push(format!("deploying to {dest} with the `{scheme}` target"));
+            for line in targets.deploy(&spec, &req)? {
+                log.push(line);
+            }
+            let plan = targets.plan(&spec, &req);
+            if !plan.url.is_empty() {
+                log.push(format!("api: {}", plan.url));
+            }
+        }
     }
     Ok(log)
+}
+
+
+/// The crate this binary was built from, so a plugin target can find cross-built
+/// artifacts (`target/<triple>/release/fleet[.exe]`). The installed binary's own
+/// path cannot reveal this, and requiring the operator to export a variable is a
+/// step that only gets done after a failed deploy — so it is discovered: an
+/// explicit `FLEET_SOURCE_DIR` wins, then the working directory and its parents.
+pub fn source_dir() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("FLEET_SOURCE_DIR") {
+        let p = std::path::PathBuf::from(dir);
+        if p.join("Cargo.toml").is_file() {
+            return Some(p);
+        }
+    }
+    let start = std::env::current_dir().ok()?;
+    for dir in start.ancestors() {
+        let manifest = dir.join("Cargo.toml");
+        if manifest.is_file() {
+            if let Ok(text) = std::fs::read_to_string(&manifest) {
+                if text.contains("name = \"fleet\"") {
+                    return Some(dir.to_path_buf());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The binary to deploy.

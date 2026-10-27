@@ -17,7 +17,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::SystemTime;
 
 /// How a harness is executed.
@@ -431,7 +431,7 @@ impl Registry {
         let mtime = meta.modified().ok();
         let len = meta.len();
         {
-            let cache = self.cache.lock().unwrap();
+            let cache = self.cache.lock();
             if let Some(c) = cache.get(path) {
                 if c.mtime == mtime && c.len == len {
                     return Ok(c.harness.clone());
@@ -448,7 +448,7 @@ impl Registry {
             toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
         h.source = Some(path.to_path_buf());
         h.validate(path)?;
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         cache.insert(
             path.to_path_buf(),
             Cached {
@@ -482,7 +482,7 @@ impl Registry {
         let tmp = self.dir.join(format!(".{}.tmp", h.name));
         std::fs::write(&tmp, &text).with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, &dest).with_context(|| format!("installing {}", dest.display()))?;
-        self.cache.lock().unwrap().remove(&dest);
+        self.cache.lock().remove(&dest);
         self.get(&h.name)
     }
 
@@ -494,13 +494,13 @@ impl Registry {
             bail!("no harness named `{name}` in {}", self.dir.display());
         }
         std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-        self.cache.lock().unwrap().remove(&path);
+        self.cache.lock().remove(&path);
         Ok(path)
     }
 
     /// Reload the cache from disk. Only useful to force a re-read of a file
     /// whose mtime did not change; normal operation needs no call at all.
     pub fn invalidate(&self) {
-        self.cache.lock().unwrap().clear();
+        self.cache.lock().clear();
     }
 }

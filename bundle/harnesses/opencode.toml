@@ -1,17 +1,14 @@
 name = "opencode"
 description = "opencode: multi-provider agent, good at bulk edits"
 kind = "cli"
-
 command = "opencode"
 args = ["run", "{prompt}"]
 model_flag = ["--model", "{model}"]
 effort_flag = ["--variant", "{effort}"]
 prompt_on_stdin = false
-
 route = "jev"
 models = ["*"]
 effort = "medium"
-
 tags = ["code", "bulk", "multi-provider"]
 priority = 70
 cost_hint = 0.04

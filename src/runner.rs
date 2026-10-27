@@ -207,14 +207,14 @@ pub fn run_streaming(
         .take()
         .ok_or_else(|| anyhow!("no stderr pipe"))?;
 
-    let err_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let err_buf = std::sync::Arc::new(parking_lot::Mutex::new(String::new()));
     let err_thread = {
         let buf = err_buf.clone();
         std::thread::spawn(move || {
             let mut s = String::new();
             let mut r = BufReader::new(stderr);
             let _ = r.read_to_string(&mut s);
-            *buf.lock().unwrap() = s;
+            *buf.lock() = s;
         })
     };
 
@@ -241,7 +241,7 @@ pub fn run_streaming(
     }
     let status = child.wait()?;
     let _ = err_thread.join();
-    let stderr = err_buf.lock().unwrap().clone();
+    let stderr = err_buf.lock().clone();
     Ok(Capture {
         ok: status.success(),
         code: status.code().unwrap_or(-1),

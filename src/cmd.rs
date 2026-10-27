@@ -389,10 +389,14 @@ pub fn providers(c: ProvidersCmd, json: bool) -> Result<()> {
             println!("providers: {}  ({})", ps.path().display(), all.len());
             for p in &all {
                 println!(
-                    "  {:<16} {:<40} {:<8} {}",
+                    "  {:<16} {:<38} {:<9} {:<22} {}",
                     p.name,
                     p.base_url,
-                    if p.available() { "key ok" } else { "no key" },
+                    if p.available() { "ready" } else { "unusable" },
+                    // The SOURCE is shown, never a value: an operator needs to
+                    // know whether a provider is an env var, a vault command, or
+                    // an OAuth login before they can fix a rejection.
+                    p.source().label(),
                     if p.block.is_empty() {
                         String::new()
                     } else {
@@ -425,7 +429,8 @@ pub fn providers(c: ProvidersCmd, json: bool) -> Result<()> {
                 block,
                 enabled: true,
                 notes: String::new(),
-            };
+                        credential: None,
+};
             ps.put(&p)?;
             println!(
                 "provider `{name}` saved — every harness may use it on the next call{}",

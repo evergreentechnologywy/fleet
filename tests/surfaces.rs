@@ -205,6 +205,7 @@ fn providers_are_shared_by_every_harness_with_explicit_blocks() {
         block: vec![],
         enabled: true,
         notes: String::new(),
+            credential: None,
     })
     .unwrap();
     ps.put(&Provider {
@@ -216,6 +217,7 @@ fn providers_are_shared_by_every_harness_with_explicit_blocks() {
         block: vec!["omp".into()],
         enabled: true,
         notes: String::new(),
+            credential: None,
     })
     .unwrap();
 
@@ -287,6 +289,7 @@ fn provider_env_exports_the_names_clis_actually_read() {
         block: vec![],
         enabled: true,
         notes: String::new(),
+            credential: None,
     })
     .unwrap();
 

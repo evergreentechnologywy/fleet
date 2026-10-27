@@ -400,6 +400,75 @@ pub fn serve(host: &str, port: u16) -> Result<()> {
                     let led = Ledger::default_path();
                     Ok(json_response(200, crate::selfmod::status(&led)?))
                 }
+                (Method::Get, "/v1/credentials") => {
+                    // Never returns a value: the SOURCE and whether it resolved.
+                    // A web panel is the last place a token should be rendered.
+                    let ps = crate::providers::Providers::default_file();
+                    let creds = crate::credential::Credentials::new();
+                    let rows: Vec<serde_json::Value> = ps
+                        .all()
+                        .iter()
+                        .map(|p| {
+                            let src = p.source();
+                            let (ok, detail) = match p.key_with(&creds, false) {
+                                Ok(Some(_)) => (true, "resolved".to_string()),
+                                Ok(None) => (false, "source is empty".to_string()),
+                                Err(e) => (false, e.to_string()),
+                            };
+                            json!({
+                                "provider": p.name,
+                                "source": src.label(),
+                                "dynamic": src.is_dynamic(),
+                                "ok": ok,
+                                "detail": detail,
+                            })
+                        })
+                        .collect();
+                    Ok(json_response(200, json!({"credentials": rows})))
+                }
+                (Method::Post, "/v1/credentials/refresh") => {
+                    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(json!({}));
+                    let want = v.get("provider").and_then(|x| x.as_str());
+                    let ps = crate::providers::Providers::default_file();
+                    let creds = crate::credential::Credentials::new();
+                    let mut done = Vec::new();
+                    for p in ps.all() {
+                        if let Some(w) = want {
+                            if p.name != w {
+                                continue;
+                            }
+                        }
+                        let src = p.source();
+                        creds.invalidate(&src);
+                        let ok = matches!(p.key_with(&creds, true), Ok(Some(_)));
+                        done.push(json!({"provider": p.name, "source": src.label(), "ok": ok}));
+                    }
+                    Ok(json_response(200, json!({"refreshed": done})))
+                }
+                (Method::Get, "/v1/targets") => {
+                    let t = crate::deploy_targets::Targets::default_dir();
+                    let rows: Vec<serde_json::Value> = t
+                        .all()
+                        .iter()
+                        .map(|s| {
+                            json!({
+                                "scheme": s.scheme,
+                                "description": s.description,
+                                "example": s.example,
+                                "url_template": s.url_template,
+                            })
+                        })
+                        .collect();
+                    let builtin = ["ssh", "tailscale", "reason", "docker", "file"];
+                    Ok(json_response(
+                        200,
+                        json!({
+                            "builtin": builtin,
+                            "plugin": rows,
+                            "dir": t.dir().to_string_lossy(),
+                        }),
+                    ))
+                }
                 (Method::Get, "/v1/config") => {
                     let c = crate::config::Config::load();
                     Ok(json_response(
@@ -441,6 +510,9 @@ pub fn serve(host: &str, port: u16) -> Result<()> {
                             "GET /v1/ledger",
                             "GET /v1/selfmod",
                             "POST /v1/selfmod",
+                            "GET /v1/credentials",
+                            "POST /v1/credentials/refresh",
+                            "GET /v1/targets",
                             "GET /v1/config",
                             "GET /v1/runs",
                         ],

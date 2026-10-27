@@ -2,9 +2,12 @@
 
 **A harness for harnesses.**
 
-One orchestrator over many agent CLIs. You give it a task; it picks one harness
-or several, in unison or in a pipeline; each call asks a chooser (Jev, or any
-alternative, or nothing at all) which model and reasoning effort to run with.
+One orchestrator that routes a task across many agent CLIs, each choosing its own
+harness and model per call based on their strengths.
+
+You give it a task; it picks one harness or several, in unison or in a pipeline.
+Every call asks a chooser (Jev, or any alternative, or nothing at all) which
+harness and which model — and at what reasoning effort — fits that call.
 
 The point is that you stop choosing between harnesses. omp is good at long
 autonomous repo work, Codex is good at a single hard review, a raw provider
