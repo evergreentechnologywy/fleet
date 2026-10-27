@@ -185,6 +185,33 @@ A resume replays the transcript and the session's facts into every brief, so no
 harness starts blind. This is the same property that makes a resumed session on
 the fleet's own desk agents safe to kill and restart.
 
+## Queue, cost, and history
+
+```console
+$ fleet queue add "audit these 40 files" --subagents 4   # returns an id at once
+$ fleet queue work --follow                              # drain, keep waiting
+$ fleet usage                                            # tokens per harness/model
+$ fleet sessions search "why did we drop pepwave" --source all
+```
+
+`fleet queue` exists because `fleet run` blocks until the answer exists. A burst
+of work should not need the submitting shell to stay alive, and a process that
+dies mid-run should not lose the queue — so the queue is a SQLite table, and
+`work` reaps anything stranded in `running` before it starts. Claiming an item is
+one `UPDATE ... RETURNING`, because two workers polling the same queue would
+otherwise both run the same row.
+
+`fleet usage` aggregates the `tok=in/out` each call writes to the ledger. A CLI
+harness reports no usage, so it is counted as **unmetered** rather than zero: a
+cost table where half the calls silently read 0 would be lying.
+
+`fleet sessions search` is one query across every harness's history — the engine's
+own turn table, omp sessions, [CC] projects, and Codex rollouts. Without it,
+answering "what did we already decide about X" meant remembering *which* harness
+said it and grepping that one directory by hand, so in practice it was re-derived
+from scratch. Reads are on demand: no index to go stale, no second copy of the
+transcripts, and a session written a second ago is already searchable.
+
 ## Interactive
 
 ```console
