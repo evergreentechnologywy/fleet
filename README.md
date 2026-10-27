@@ -127,6 +127,25 @@ $ fleet run "do X, then verify it" --serial # each stage sees the last
 $ fleet run --resume last                   # continue a conversation
 ```
 
+```console
+$ fleet run "your task" --subagents 3          # fan out: 3 harnesses at once
+$ fleet run "your task" --subagents 4 \
+      --subagent-harnesses omp,codex,claude    # restrict who serves the fan-out
+```
+
+`--subagents N` is the swarm as an **ability, not a service**. N harnesses work
+the same brief concurrently **in one process**, reusing the executor, the chooser,
+the fallback chain and shared memory — so there is no second thing to install,
+no port to open, and no key to hold. It is a unison run with a floor on how many
+harnesses answer, which is why it shares the unison merge.
+
+**Delegation is the same ability from inside a run.** A harness may spawn
+subagents of its own, bounded by `subagents` and `subagent_depth` in its TOML;
+the engine injects that contract into the prompt rather than trusting each CLI to
+document it. Depth travels through `FLEET_DEPTH`, because a subagent is a separate
+process — without that, `subagent_depth` would be dead configuration and
+delegation would recurse without a bound.
+
 | mode | what happens |
 |---|---|
 | **single** | one harness answers |
@@ -136,6 +155,10 @@ $ fleet run --resume last                   # continue a conversation
 The merge is deterministic and free — no second model call. The longest answer
 leads, the rest follow, and any harness that failed is named with its error, so a
 unison run never hides a broken harness behind a good one.
+
+Every path — sequential, parallel, and fan-out — runs through one executor that
+always tries the `[fallback]` chain, so a harness that fails mid-fan-out is
+carried by an alternate instead of taking the run down with it.
 
 ## Shared memory
 
@@ -161,6 +184,25 @@ $ fleet run --resume last "and why?"
 A resume replays the transcript and the session's facts into every brief, so no
 harness starts blind. This is the same property that makes a resumed session on
 the fleet's own desk agents safe to kill and restart.
+
+## Interactive
+
+```console
+$ fleet tui                       # a session you can attach to over ssh
+$ fleet tui -r s-abc123           # resume one
+```
+
+A line-editing REPL over the engine: every line is a task, and a line starting
+with `/` is a command (`/harness`, `/model`, `/unison`, `/serial`, `/sessions`,
+`/memory`, `/doctor`, `/help`). Deliberately **not** full-screen — a scrolling
+REPL survives an 80-column ssh pipe, a tmux pane, and a terminal that never sends
+`SIGWINCH`, and needs no cursor-addressing library.
+
+The REPL holds one session id, so every turn appends to the same conversation and
+`-r <id>` picks it up again: never losing track of a conversation is a property of
+resuming, not of a long-lived process. Raw mode is used **only** while editing a
+line, so a harness child sees a normal terminal and Ctrl-C keeps its usual meaning
+during a run.
 
 ## Providers
 
