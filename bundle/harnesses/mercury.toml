@@ -1,0 +1,28 @@
+name = "mercury"
+description = "Mercury: soul-driven agent with token budgets, multi-channel access; an HTTP daemon on :6179"
+kind = "http"
+
+# Mercury is NOT a one-shot CLI: `mercury start` runs a daemon and the agent is
+# reached over its HTTP API. Modelling it as a CLI would fail at spawn with a
+# missing-binary error that says nothing about the real shape.
+api_key_env = ""
+route = "native"
+models = ["*"]
+tags = ["agent", "daemon", "tools", "budget"]
+priority = 60
+cost_hint = 0.03
+enabled = false
+timeout_s = 900
+
+[http]
+base_url = "http://127.0.0.1:6179"
+chat_path = "/v1/chat/completions"
+auth_header = "Authorization"
+auth_scheme = "Bearer"
+
+# VERIFIED 2026-10-27: the desk runs mercury.exe at
+# %USERPROFILE%\.mercury\bin\mercury.exe, config %USERPROFILE%\.mercury\mercury.yaml
+# (web.port: 6179). It answers only while the daemon is up; a stopped daemon is
+# reported as unreachable rather than as a failed call.
+
+# DISABLED on this hub (2026-10-27): Mercury runs on the WINDOWS DESK as a daemon (mercury.yaml web.port: 6179). Disabled on the hub because nothing is listening there; on the desk the descriptor works as-is.

@@ -1,0 +1,24 @@
+name = "cairn"
+description = "Cairn: durable project memory and orchestration over MCP (read/write/run/watch)"
+kind = "cli"
+command = "cairn-cmd"
+
+# Cairn is NOT a prompt-in/answer-out agent: it is an MCP server plus a resource
+# CLI (`cairn-cmd read|write|run|watch`). Its GUI binary panics without GTK on a
+# headless host, so `cairn-cmd` is the one that works here.
+#
+# It is registered as a harness because that is how the fleet reaches a tool, but
+# its value is MEMORY, not answering: `fleet memory backend` names holographic and
+# this is the sibling that keeps a durable project log with questions, todos, and
+# wakes. Call it with an explicit subcommand, e.g.
+#   fleet run "read cairn://projects" -H cairn
+# and it will not be chosen by the planner for ordinary tasks (priority 20).
+args = ["{prompt}"]
+prompt_on_stdin = false
+route = "native"
+models = ["*"]
+tags = ["memory", "orchestration", "mcp"]
+priority = 20
+cost_hint = 0.0
+enabled = true
+timeout_s = 300

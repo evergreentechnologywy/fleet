@@ -1,0 +1,27 @@
+name = "openrouter"
+description = "OpenRouter: many models behind one key, the broadest fallback"
+kind = "openai-compat"
+api_key_env = "OPENROUTER_API_KEY"
+
+# A DIRECT provider: no CLI, no wrapper, no chooser in the path. This is what
+# keeps the fleet callable when the chooser is the thing that is broken — the
+# model id is pinned, so nothing upstream has to decide anything.
+route = "fixed"
+model = "auto"
+effort = "medium"
+models = ["*"]
+tags = ["direct", "fallback", "provider"]
+priority = 30
+cost_hint = 0.02
+enabled = true
+timeout_s = 600
+
+[http]
+base_url = "https://openrouter.ai/api/v1"
+chat_path = "/v1/chat/completions"
+auth_header = "Authorization"
+auth_scheme = "Bearer"
+
+# VERIFIED 2026-10-27: the OPENROUTER_API_KEY is valid but the account has no credits (HTTP
+# 402 'Insufficient credits'). Kept enabled because adding credit is the only
+# fix and it needs no code change.

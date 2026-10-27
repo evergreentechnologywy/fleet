@@ -1,0 +1,30 @@
+name = "claude"
+description = "Claude Code: careful multi-file refactors and review; reaches the fleet's authorized models through the Anthropic shim"
+kind = "cli"
+command = "claude"
+args = ["-p", "{prompt}", "--output-format", "text"]
+model_flag = ["--model", "{model}"]
+prompt_on_stdin = false
+# Claude Code speaks the Anthropic Messages API, not OpenAI's. The fleet runs
+# anthropic_shim.py, which accepts that shape and serves the AUTHORIZED models —
+# so the CLI's own model ids never reach billing. Without this the CLI tries to
+# authenticate against Anthropic directly and fails.
+env = { ANTHROPIC_BASE_URL = "http://127.0.0.1:8890", ANTHROPIC_API_KEY = "shim" }
+route = "jev"
+# Claude Code reaches the fleet through anthropic_shim.py, which maps ANY
+# Anthropic-shaped model id to the authorized fleet model. The ceiling is
+# therefore the shim's interface, not a catalogue: declare the ids the shim
+# accepts so the router has something to clamp to.
+models = ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"]
+effort = "high"
+tags = ["code", "refactor", "review", "repo", "long"]
+priority = 85
+cost_hint = 0.15
+enabled = true
+timeout_s = 3600
+
+# Delegation: this harness may spawn up to 3 subagents through `fleet run`,
+# so a subagent inherits the chooser, provider rules, plugins, and shared
+# memory. One level deep: a real split, not a tree nobody can account for.
+subagents = 3
+subagent_depth = 1

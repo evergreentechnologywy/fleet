@@ -1,0 +1,30 @@
+name = "kimi"
+description = "Kimi Code (Moonshot): next-gen agent CLI; -p runs one prompt non-interactively"
+kind = "cli"
+command = "kimi"
+
+# VERIFIED 2026-10-27 from `kimi --help`: `-p, --prompt <prompt>` runs one prompt
+# non-interactively and prints the response. `--auto` is Never-Ask mode, which is
+# what a headless run needs so it cannot block on a question.
+args = ["-p", "{prompt}"]
+model_flag = ["-m", "{model}"]
+prompt_on_stdin = false
+route = "jev"
+models = ["jev/auto", "auto"]
+effort = "medium"
+tags = ["code", "agent", "moonshot"]
+priority = 77
+cost_hint = 0.04
+enabled = false
+timeout_s = 3600
+
+# VERIFIED 2026-10-27, two corrections:
+#  1. `--auto` and `-p` CANNOT be combined — "error: Cannot combine --prompt with
+#     --auto". The flag was wrong; `-p` alone is the headless door.
+#  2. It then reports "No model configured. Run `kimi` and use /login to sign in,
+#     or set default_model in config.toml" — the CLI is installed but NOT logged
+#     in, so it cannot answer. Disabled until a login exists; the descriptor is
+#     otherwise correct and needs no change when it is.
+#
+# Worth keeping: the first error blamed the FLAGS, the second blamed the ACCOUNT.
+# Fixing only the flags would have left a harness that still could not run.

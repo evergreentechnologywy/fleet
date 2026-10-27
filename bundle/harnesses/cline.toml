@@ -1,0 +1,24 @@
+name = "cline"
+description = "Cline: autonomous coding agent, act/plan modes, unsupervised runs"
+kind = "cli"
+command = "cline"
+args = ["{prompt}"]
+# Cline accepts none|low|medium|high|xhigh — NOT the fleet's "minimal"/"max"
+# vocabulary, so the chooser's effort is clamped by the engine's own mapping.
+prompt_on_stdin = false
+route = "jev"
+# No model is injected: this CLI keeps its own configured default, and
+# `jev/auto` is meaningless to it (measured: openclaw answers "Unknown model:
+# jev/auto", codex reads it as stdin). An empty `model_flag` is what makes
+# the router pass nothing.
+# The DOOR-SERVED models this CLI may be given. Not the alias `jev/auto`:
+# a CLI receives a model id on its own command line and cannot resolve the
+# door's routing alias (measured: "Unknown model: jev/auto", and qwen falls
+# back to its own default which the door also does not serve).
+models = ["deepseek-v4.1-flash", "glm-5.3-flash", "gpt-oss-120b", "mimo-v2.6-flash"]
+effort = "medium"
+tags = ["code", "autonomous", "plan", "tools"]
+priority = 68
+cost_hint = 0.06
+enabled = true
+timeout_s = 3600

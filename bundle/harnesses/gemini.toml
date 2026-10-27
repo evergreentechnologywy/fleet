@@ -1,0 +1,35 @@
+name = "gemini"
+description = "Gemini CLI: 1M-context reads, large-repo sweeps, vision-heavy work"
+kind = "cli"
+command = "gemini"
+# Two flags are mandatory in headless mode and each failure reads as something
+# else: without --skip-trust it refuses with "not running in a trusted
+# directory", and without an auth method it exits 41. The trust flag is what a
+# non-interactive run needs; auth comes from GEMINI_API_KEY / GOOGLE_API_KEY.
+args = ["--skip-trust", "-p", "{prompt}", "-o", "text"]
+model_flag = ["-m", "{model}"]
+prompt_on_stdin = false
+route = "jev"
+# This harness reaches the fleet through the chooser's OpenAI door, and the
+# door is a CHOOSER: you ask for `jev/auto` and it resolves an authorized
+# model itself. Declaring the catalogue here would be wrong twice over — the
+# door advertises router ids it then refuses, and the router CLAMPS the
+# chooser's answer to this list, so the list is the alias, not the models.
+models = ["jev/auto", "auto"]
+effort = "medium"
+tags = ["code", "long-context", "read", "vision", "search"]
+priority = 78
+cost_hint = 0.02
+enabled = false
+timeout_s = 1800
+
+# DISABLED 2026-10-27, measured: the Gemini CLI speaks Google's native
+# generateContent API, not OpenAI chat/completions, so it cannot reach the
+# fleet through the chooser door. Pointing GEMINI_BASE_URL at the door returns
+# ModelNotFoundError (404) for every model, and there is no Google API key on
+# this host. Re-enable once one of these exists:
+#   * a GOOGLE_API_KEY with Gemini API access, or
+#   * a gemini<->openai shim (the pattern already used by anthropic_shim.py,
+#     which is what makes the `claude` harness work here).
+# Left in the registry rather than deleted so the gap is visible in
+# `fleet harness list` instead of being rediscovered as a mystery failure.

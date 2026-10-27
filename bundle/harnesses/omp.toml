@@ -7,10 +7,21 @@ model_flag = ["--model", "{model}"]
 effort_flag = ["--thinking", "{effort}"]
 prompt_on_stdin = false
 route = "jev"
-models = ["*"]
+# This harness reaches the fleet through the chooser's OpenAI door, and the
+# door is a CHOOSER: you ask for `jev/auto` and it resolves an authorized
+# model itself. Declaring the catalogue here would be wrong twice over — the
+# door advertises router ids it then refuses, and the router CLAMPS the
+# chooser's answer to this list, so the list is the alias, not the models.
+models = ["jev/auto", "auto"]
 effort = "high"
 tags = ["code", "tools", "long", "repo"]
 priority = 90
 cost_hint = 0.05
 enabled = true
 timeout_s = 3600
+
+# Delegation: this harness may spawn up to 3 subagents through `fleet run`,
+# so a subagent inherits the chooser, provider rules, plugins, and shared
+# memory. One level deep: a real split, not a tree nobody can account for.
+subagents = 3
+subagent_depth = 1

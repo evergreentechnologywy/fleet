@@ -1,0 +1,27 @@
+name = "opencode-free"
+description = "opencode on a FREE model: the fleet's last-resort lane, needs no key and no chooser"
+kind = "cli"
+command = "opencode"
+
+# The tail of the fallback chain, and the one rung that costs nothing and needs
+# nothing: `opencode` ships free models that need no API key. Verified 2026-10-27:
+# `opencode run "..." --model opencode/deepseek-v4.1-flash-free` -> PONG.
+#
+# OWNER OVERRIDE 2026-10-27: the policy file retires the PROVIDER id
+# `opencode-free` (directive 2026-09-24). The owner explicitly reinstated it as
+# the final fallback. Note the distinction that makes this safe: the retired
+# thing was the opencode-free PROVIDER LANE (an API endpoint the chooser could
+# route to); this is a HARNESS (a CLI the fleet runs when everything else has
+# failed). They are not the same object, and only the harness is re-enabled.
+args = ["run", "{prompt}", "--model", "opencode/deepseek-v4.1-flash-free"]
+prompt_on_stdin = false
+route = "fixed"
+model = "opencode/deepseek-v4.1-flash-free"
+models = ["opencode/deepseek-v4.1-flash-free", "opencode/glm-5.3-flash-free", "opencode/mimo-v2.6-flash-free"]
+effort = "medium"
+tags = ["free", "fallback", "code", "no-key"]
+# Last in any chain: it is the floor, not a preference.
+priority = 10
+cost_hint = 0.0
+enabled = true
+timeout_s = 1800

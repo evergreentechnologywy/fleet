@@ -1,12 +1,18 @@
 name = "opencode"
 description = "opencode: multi-provider agent, good at bulk edits"
 kind = "cli"
+# The CLI keeps its OWN configured model; an injected id fails it
+# (measured: opencode works bare, errors with `--model jev/auto`).
+# An empty model_flag is what makes the router pass nothing.
 command = "opencode"
 args = ["run", "{prompt}"]
-model_flag = ["--model", "{model}"]
-effort_flag = ["--variant", "{effort}"]
 prompt_on_stdin = false
 route = "jev"
+# This harness reaches the fleet through the chooser's OpenAI door, and the
+# door is a CHOOSER: you ask for `jev/auto` and it resolves an authorized
+# model itself. Declaring the catalogue here would be wrong twice over — the
+# door advertises router ids it then refuses, and the router CLAMPS the
+# chooser's answer to this list, so the list is the alias, not the models.
 models = ["*"]
 effort = "medium"
 tags = ["code", "bulk", "multi-provider"]

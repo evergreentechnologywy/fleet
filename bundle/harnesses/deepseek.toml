@@ -1,0 +1,47 @@
+name = "deepseek"
+description = "DeepSeek direct: the fleet's own model family, no CLI in between"
+kind = "openai-compat"
+api_key_env = "DEEPSEEK_API_KEY"
+
+# A DIRECT provider: no CLI, no wrapper, no chooser in the path. This is what
+# keeps the fleet callable when the chooser is the thing that is broken — the
+# model id is pinned, so nothing upstream has to decide anything.
+route = "fixed"
+model = "deepseek-flash"
+effort = "medium"
+models = ["deepseek-flash", "deepseek-v4-pro"]
+tags = ["direct", "fallback", "provider"]
+priority = 35
+cost_hint = 0.02
+enabled = false
+timeout_s = 600
+
+[http]
+base_url = "https://api.deepseek.com/v1"
+chat_path = "/v1/chat/completions"
+auth_header = "Authorization"
+auth_scheme = "Bearer"
+
+# VERIFIED 2026-10-27: ENABLED. The key was mislabeled, not missing —
+# DEEPSEEK_API_KEY held a tokenbroker key (tb_...) in /opt/fleet/.env while the
+# real DeepSeek key (sk-...) sat in /opt/fleet/secrets/netcup-hermes.env. The
+# import took the wrong one because both values were the same length and file
+# order broke the tie. Fixed at the source and in the scorer (keys.rs now ranks
+# by key SHAPE, so a tb_ value in a deepseek variable loses decisively).
+# DeepSeek answers HTTP 200 now.
+
+# VERIFIED 2026-10-27: DeepSeek's own /v1/models serves exactly two ids —
+# `deepseek-flash` and `deepseek-v4-pro`. The tokenbroker alias
+# `deepseek-v4.1-flash` does NOT exist here, and asking for it returns a
+# model-not-found that reads like an auth failure.
+
+# VERIFIED 2026-10-27, corrected: the key is RIGHT and the endpoint is RIGHT;
+# the ACCOUNT HAS NO BALANCE. A direct call returns
+#   {"error":{"message":"Insufficient Balance",...}}
+# Disabled so the chain does not spend an attempt on a lane that cannot pay.
+# Re-enable the moment the account is funded — nothing else needs to change.
+#
+# The lesson worth keeping: three different faults all read as "the harness
+# failed" — a mislabeled key (401), a wrong model id (model-not-found), and an
+# unfunded account (insufficient balance). Each needed a different fix, and the
+# provider's own error body was the only thing that told them apart.

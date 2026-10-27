@@ -1,0 +1,23 @@
+name = "crush"
+description = "Crush (Charm): terminal coding agent with LSP awareness; good at in-repo fixes"
+kind = "cli"
+command = "crush"
+model_flag = ["--model", "{model}"]
+args = ["run", "{prompt}"]
+prompt_on_stdin = false
+route = "jev"
+# No model is injected: this CLI keeps its own configured default, and
+# `jev/auto` is meaningless to it (measured: openclaw answers "Unknown model:
+# jev/auto", codex reads it as stdin). An empty `model_flag` is what makes
+# the router pass nothing.
+# The DOOR-SERVED models this CLI may be given. Not the alias `jev/auto`:
+# a CLI receives a model id on its own command line and cannot resolve the
+# door's routing alias (measured: "Unknown model: jev/auto", and qwen falls
+# back to its own default which the door also does not serve).
+models = ["deepseek-v4.1-flash", "glm-5.3-flash", "gpt-oss-120b", "mimo-v2.6-flash"]
+effort = "medium"
+tags = ["code", "lsp", "repo", "edit"]
+priority = 64
+cost_hint = 0.03
+enabled = true
+timeout_s = 1800

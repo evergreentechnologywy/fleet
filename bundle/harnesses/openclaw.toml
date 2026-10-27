@@ -1,0 +1,25 @@
+name = "openclaw"
+description = "OpenClaw: multi-channel agent gateway; headless single turn via `agent exec`"
+kind = "cli"
+command = "openclaw"
+args = ["agent", "exec", "{prompt}", "--json"]
+prompt_on_stdin = false
+route = "jev"
+# No model is injected: this CLI keeps its own configured default, and
+# `jev/auto` is meaningless to it (measured: openclaw answers "Unknown model:
+# jev/auto", codex reads it as stdin). An empty `model_flag` is what makes
+# the router pass nothing.
+models = ["*"]
+effort = "medium"
+tags = ["code", "gateway", "tools", "review"]
+priority = 72
+cost_hint = 0.07
+enabled = false
+timeout_s = 3600
+
+# DISABLED 2026-10-27, measured: openclaw reaches its OWN configured provider
+# (openai, model gpt-6-astra) and that account returns
+#   402 insufficient_balance_error
+# The descriptor is right — with itself as the model source it runs perfectly.
+# The account needs credit. Enabled harnesses that cannot answer make the
+# planner waste an attempt, so this is off until the account is funded.

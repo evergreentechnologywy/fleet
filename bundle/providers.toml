@@ -1,28 +1,118 @@
-# The fleet's provider set. A key is always an env var NAME or a broker command,
-# never a value: this file is safe to hold in git.
+# Providers are fleet-wide: declare once, every harness can use it.
+# A key is always named, never written, so this file stays publishable.
+#
+# [[provider]]
+# name = "myprovider"
+# base_url = "https://api.myprovider.ai/v1"
+# key_env = "MYPROVIDER_API_KEY"
+# models = ["*"]
+# # Harnesses that must never receive it:
+# block = []
+
+[[provider]]
+name = "chooser"
+base_url = "http://127.0.0.1:8792/v1"
+key_env = "TB_API_KEY"
+models = ["*"]
+block = []
+enabled = true
+notes = "the Jev chooser's OpenAI door; same authorized models, fleet-decided"
+
+[provider.extra]
+
+[[provider]]
+name = "step-plan"
+base_url = "https://api.stepfun.ai/step_plan/v1"
+key_env = "STEP_API_KEY"
+models = ["*"]
+block = []
+enabled = true
+notes = "Step subscription models and media"
+
+[provider.extra]
+
+[[provider]]
+name = "liquid"
+base_url = "https://api.liquid.ai/v1"
+key_env = "LIQUID_API_KEY"
+models = ["*"]
+block = []
+enabled = true
+notes = "same-model failover and cost comparison lane"
+
+[provider.extra]
+
+[[provider]]
+name = "muse"
+base_url = "http://127.0.0.1:8792/v1"
+key_env = ""
+models = ["*"]
+block = []
+enabled = true
+notes = "OAuth via the omp broker; routed through the chooser door"
+
+[provider.credential]
+kind = "oauth"
+broker = "omp"
+args = []
+provider = "muse-code"
+force_refresh = false
+ttl_s = 300
+json_field = "oauthAccessToken"
+
+[provider.extra]
 
 [[provider]]
 name = "tokenbroker"
 base_url = "https://api.thetokenbroker.ai/v1"
 key_env = "TB_API_KEY"
 models = ["*"]
+block = []
 enabled = true
-notes = "fleet main lane"
+notes = "detected from the environment at onboarding"
 
-# An OAuth provider: the credential is a login managed by omp's broker, so there
-# is no long-lived key to rotate. `fleet credential refresh` re-resolves it, and
-# a rejected call re-resolves it automatically.
+[provider.extra]
+
 [[provider]]
-name = "muse"
-base_url = "https://api.muse.example/v1"
-key_env = ""
+name = "openai"
+base_url = "https://api.openai.com/v1"
+key_env = "OPENAI_API_KEY"
 models = ["*"]
+block = []
 enabled = true
-notes = "OAuth via the omp broker"
+notes = "detected from the environment at onboarding"
 
-[provider.credential]
-kind = "oauth"
-broker = "omp"
-provider = "muse-code"
-ttl_s = 300
-json_field = "oauthAccessToken"
+[provider.extra]
+
+[[provider]]
+name = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+key_env = "OPENROUTER_API_KEY"
+models = ["*"]
+block = []
+enabled = true
+notes = "detected from the environment at onboarding"
+
+[provider.extra]
+
+[[provider]]
+name = "deepseek"
+base_url = "https://api.deepseek.com/v1"
+key_env = "DEEPSEEK_API_KEY"
+models = ["*"]
+block = []
+enabled = true
+notes = "detected from the environment at onboarding"
+
+[provider.extra]
+
+[[provider]]
+name = "dashscope"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+key_env = "DASHSCOPE_API_KEY"
+models = ["*"]
+block = []
+enabled = true
+notes = "Alibaba DashScope / Qwen"
+
+[provider.extra]

@@ -1,0 +1,23 @@
+name = "muse"
+description = "Muse Code via the omp OAuth broker, routed through the chooser door"
+kind = "openai-compat"
+api_key_env = "TB_API_KEY"
+
+# A DIRECT provider: no CLI, no wrapper, no chooser in the path. This is what
+# keeps the fleet callable when the chooser is the thing that is broken — the
+# model id is pinned, so nothing upstream has to decide anything.
+route = "fixed"
+model = "auto"
+effort = "medium"
+models = ["*"]
+tags = ["direct", "fallback", "provider"]
+priority = 36
+cost_hint = 0.02
+enabled = true
+timeout_s = 600
+
+[http]
+base_url = "http://127.0.0.1:8792/v1"
+chat_path = "/v1/chat/completions"
+auth_header = "Authorization"
+auth_scheme = "Bearer"

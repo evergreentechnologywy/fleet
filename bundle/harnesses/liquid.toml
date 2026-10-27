@@ -1,0 +1,27 @@
+name = "liquid"
+description = "Liquid: same models as tokenbroker, priced per call"
+kind = "openai-compat"
+api_key_env = "LIQUID_API_KEY"
+
+# A DIRECT provider: no CLI, no wrapper, no chooser in the path. This is what
+# keeps the fleet callable when the chooser is the thing that is broken — the
+# model id is pinned, so nothing upstream has to decide anything.
+route = "fixed"
+model = "deepseek-v4.1-flash"
+effort = "medium"
+models = ["*"]
+tags = ["direct", "fallback", "provider"]
+priority = 28
+cost_hint = 0.02
+enabled = true
+timeout_s = 600
+
+[http]
+base_url = "https://router.inference.ai.exchange/v1"
+chat_path = "/v1/chat/completions"
+auth_header = "Authorization"
+auth_scheme = "Bearer"
+
+# Base URL is the reverse-auction EXCHANGE, not api.liquid.ai (404) and not
+# router.inference.ai (522/523 — the wrong host entirely). The policy file
+# is the authority: lanes.liquid.base_url.

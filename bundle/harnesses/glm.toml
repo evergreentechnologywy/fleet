@@ -1,0 +1,25 @@
+name = "glm"
+description = "GLM ACP agent (Z.AI / Zhipu): ACP agent in TypeScript over the GLM coding plan"
+kind = "cli"
+command = "glm-acp-agent"
+
+# VERIFIED 2026-10-27: the package is `glm-acp-agent` (npm), an ACP agent that
+# speaks the Z.AI / Zhipu GLM coding plan. It is NOT a `z-code` CLI — that name
+# does not exist on npm (the only `zcode` there is an unrelated 0.0.1 stub).
+args = ["{prompt}"]
+prompt_on_stdin = false
+route = "native"
+models = ["*"]
+effort = "medium"
+tags = ["code", "acp", "glm", "zai"]
+priority = 62
+cost_hint = 0.04
+enabled = false
+timeout_s = 3600
+
+# DISABLED 2026-10-27, measured: `glm-acp-agent` is an ACP (Agent Client Protocol)
+# agent, not a prompt-in/answer-out CLI. Invoked with a bare prompt it exits 0
+# and prints NOTHING, which the engine correctly reports as an empty answer.
+# To use it, the fleet needs an ACP client that speaks the session handshake —
+# the same shape `omp acp` already exposes. Until then it is a gap, not a bug,
+# and it is disabled rather than left to return empty answers.

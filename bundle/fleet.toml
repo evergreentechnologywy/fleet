@@ -7,8 +7,23 @@ args = [
     "--json",
 ]
 ttl_s = 300
+priority = "balanced"
+
+[chooser.priority_by_harness]
 
 [defaults]
 model = "deepseek-v4.1-flash"
 provider_base = "https://api.thetokenbroker.ai/v1"
 provider_key_env = "TB_API_KEY"
+
+[memory]
+backend = "sqlite"
+hub = "http://100.87.28.18:8788"
+
+[fallback]
+chain = [
+    "muse",
+    "liquid",
+    "opencode-free",
+]
+max_attempts = 3

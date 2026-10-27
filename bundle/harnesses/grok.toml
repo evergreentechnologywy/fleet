@@ -1,0 +1,21 @@
+name = "grok"
+description = "Grok Build: xAI's terminal agent; headless one-shot with --print"
+kind = "cli"
+command = "grok"
+
+# VERIFIED 2026-10-27 on the desk: `grok --print "<prompt>"` prints the response
+# and exits. The interactive TUI is the default, so the flag is not optional.
+# `grok agent` is the non-UI surface; `--print` is the single-turn door.
+args = ["--print", "{prompt}"]
+model_flag = ["-m", "{model}"]
+prompt_on_stdin = false
+route = "native"
+models = ["*"]
+effort = "medium"
+tags = ["code", "agent", "xai"]
+priority = 76
+cost_hint = 0.05
+enabled = false
+timeout_s = 3600
+
+# DISABLED on this hub (2026-10-27): the Grok Build CLI is installed on the WINDOWS DESK (%USERPROFILE%\.grok\bin\grok.exe), not on this Linux hub. Disabled here so the doctor does not report a harness the hub cannot run; enable it on any node that has the binary (`fleet harness enable grok`).

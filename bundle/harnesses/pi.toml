@@ -1,0 +1,26 @@
+name = "pi"
+description = "Pi (Oh My Pi upstream): minimal, self-modifying coding agent; tree sessions, compaction"
+kind = "cli"
+command = "pi"
+args = ["--print", "{prompt}"]
+model_flag = ["--model", "{model}"]
+prompt_on_stdin = false
+route = "jev"
+# This harness reaches the fleet through the chooser's OpenAI door, and the
+# door is a CHOOSER: you ask for `jev/auto` and it resolves an authorized
+# model itself. Declaring the catalogue here would be wrong twice over — the
+# door advertises router ids it then refuses, and the router CLAMPS the
+# chooser's answer to this list, so the list is the alias, not the models.
+models = ["jev/auto", "auto"]
+effort = "medium"
+tags = ["code", "minimal", "self-modify", "repo"]
+priority = 74
+cost_hint = 0.04
+enabled = false
+timeout_s = 3600
+
+# DISABLED 2026-10-27, measured: pi has NO provider configured —
+# `pi --list-models` returns "No models available. Use /login to log into a
+# provider via OAuth or API key." So it cannot answer, and being picked by the
+# planner costs an attempt that another harness then has to absorb. The
+# descriptor is correct; the account is not set up.

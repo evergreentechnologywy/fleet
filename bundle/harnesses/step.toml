@@ -1,0 +1,28 @@
+name = "step"
+description = "Step Plan subscription: step-5-preview, the client-lane main model"
+kind = "openai-compat"
+api_key_env = "STEP_API_KEY"
+
+# A DIRECT provider: no CLI, no wrapper, no chooser in the path. This is what
+# keeps the fleet callable when the chooser is the thing that is broken — the
+# model id is pinned, so nothing upstream has to decide anything.
+route = "fixed"
+model = "step-5-preview"
+effort = "medium"
+models = ["*"]
+tags = ["direct", "fallback", "provider"]
+priority = 38
+cost_hint = 0.02
+enabled = false
+timeout_s = 600
+
+[http]
+base_url = "https://api.stepfun.ai/step_plan/v1"
+chat_path = "/v1/chat/completions"
+auth_header = "Authorization"
+auth_scheme = "Bearer"
+
+# VERIFIED 2026-10-27: the Step Plan subscription is not active: 'you have no active step plan
+# subscription' from api.stepfun.ai. The DESCRIPTOR is correct (base URL, model
+# step-5-preview, max_tokens floor); the account is the problem. Re-enable the
+# moment a subscription is active — this is the client-lane main model.
