@@ -129,6 +129,7 @@ $ fleet run --resume last                   # continue a conversation
 
 ```console
 $ fleet run "your task" --subagents 3          # fan out: 3 harnesses at once
+$ fleet run "your task" --subagents 3 --worktree   # ...each in its own checkout
 $ fleet run "your task" --subagents 4 \
       --subagent-harnesses omp,codex,claude    # restrict who serves the fan-out
 ```
@@ -155,6 +156,13 @@ delegation would recurse without a bound.
 The merge is deterministic and free — no second model call. The longest answer
 leads, the rest follow, and any harness that failed is named with its error, so a
 unison run never hides a broken harness behind a good one.
+
+**`--worktree` is what makes a fan-out safe for WRITES.** Parallel agents editing
+one tree is the failure mode of multi-agent coding: two harnesses fix different
+bugs, overwrite each other, and it looks like a bad model rather than a bad
+schedule. With the flag, each job gets a detached-HEAD `git worktree` under
+`runs/<id>/wt-<harness>` and you merge what you want. Outside a git repo it says
+so and falls back to the shared directory, rather than refusing to run.
 
 Every path — sequential, parallel, and fan-out — runs through one executor that
 always tries the `[fallback]` chain, so a harness that fails mid-fan-out is
