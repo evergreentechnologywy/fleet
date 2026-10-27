@@ -270,6 +270,15 @@ pub fn base_env(
             "FLEET_HOME".to_string(),
             crate::paths::home().to_string_lossy().to_string(),
         ),
+        // The delegation depth, handed to a subagent through the environment
+        // because a subagent is a separate `fleet run` PROCESS — nothing in
+        // memory links it to its parent. This process's own depth came in the
+        // same way, so the child's is one more. Read back by the engine to bound
+        // recursion; without it `subagent_depth` was dead configuration.
+        (
+            "FLEET_DEPTH".to_string(),
+            (crate::engine::depth_from_env() + 1).to_string(),
+        ),
     ];
     if let Some(b) = chooser_base {
         v.push(("FLEET_CHOOSER_BASE_URL".to_string(), b.to_string()));

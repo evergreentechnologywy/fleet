@@ -39,6 +39,7 @@ fn run_with(harness: &str, task: &str) -> fleet::engine::RunResult {
         direct_api_key: None,
         cwd: None,
         continue_session: false,
+        ..Default::default()
     };
     fleet::engine::run(task, &opts).expect("the engine must not error out entirely")
 }
@@ -125,6 +126,7 @@ fn the_direct_model_path_needs_no_harness_at_all() {
         direct_api_key: None,
         cwd: None,
         continue_session: false,
+        ..Default::default()
     };
     let r = fleet::engine::run("Reply with exactly: PONG", &opts).expect("direct call");
     assert_eq!(r.mode, "direct");
@@ -212,6 +214,7 @@ fn a_disabled_harness_is_not_offered_by_the_planner() {
         direct_api_key: None,
         cwd: None,
         continue_session: false,
+        ..Default::default()
     };
     let r = fleet::engine::run("Reply with exactly: PONG", &opts).expect("auto run");
     for c in &r.calls {
@@ -221,4 +224,58 @@ fn a_disabled_harness_is_not_offered_by_the_planner() {
             c.harness
         );
     }
+}
+
+#[test]
+fn a_fan_out_gets_the_same_fallback_chain_as_a_serial_run() {
+    if !have_fleet() {
+        return;
+    }
+    // The bug this pins: the parallel branch used to call `run_job` directly
+    // while the sequential branch called `run_job_with_fallback`, so a plan with
+    // two or more concurrent harnesses — the normal case, since max_parallel
+    // defaults to 4 — silently skipped the [fallback] chain. It is invisible
+    // while everything succeeds and looks like "every harness failed" when one
+    // does not, which is exactly what the chain exists to prevent.
+    //
+    // `gemini` is disabled, so a fan-out that INCLUDES it must still produce an
+    // answer from somewhere. Asserting on the whole run, not on gemini alone,
+    // is what makes this a parallel-path test.
+    let opts = fleet::engine::RunOptions {
+        harness: None,
+        unison: true,
+        serial: false,
+        resume: None,
+        session: None,
+        verbose: false,
+        brief_prefix: None,
+        no_lessons: true,
+        dry: true,
+        direct_model: None,
+        direct_provider: None,
+        direct_api_key: None,
+        cwd: None,
+        continue_session: false,
+        subagents: 3,
+        subagent_harnesses: vec!["gemini".into(), "omp".into(), "codex".into()],
+        ..Default::default()
+    };
+    let r = fleet::engine::run("Reply with exactly: PONG", &opts).expect("fan-out run");
+    assert!(
+        r.calls.len() >= 2,
+        "a --subagents 3 run must fan out, got {} call(s)",
+        r.calls.len()
+    );
+    assert!(
+        r.calls.iter().any(|c| c.ok),
+        "every call failed, so the parallel path skipped the fallback chain: {:?}",
+        r.calls
+            .iter()
+            .map(|c| (&c.harness, &c.error))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        r.mode, "unison",
+        "a fan-out is a unison with a floor on the harness count"
+    );
 }

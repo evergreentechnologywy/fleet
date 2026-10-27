@@ -235,6 +235,19 @@ struct RunArgs {
     /// reversible. A caller that keeps passing it gets the same behaviour.
     #[arg(long, short = 'p')]
     print_mode: bool,
+
+    /// Fan out: run this task on N different harnesses at once, in parallel.
+    ///
+    /// This is the swarm as an ABILITY rather than a service: one process, one
+    /// run, several harnesses working the same brief concurrently. `0` (the
+    /// default) leaves the count to the planner.
+    #[arg(long, default_value_t = 0)]
+    subagents: usize,
+
+    /// Restrict a fan-out to these harnesses (comma-separated). Empty means any
+    /// enabled harness the planner picks.
+    #[arg(long, value_delimiter = ',')]
+    subagent_harnesses: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]

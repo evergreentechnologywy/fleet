@@ -325,6 +325,23 @@ fn serve_one(host: &str, port: u16, registry: &Registry) -> Result<()> {
                             .and_then(|b| b.as_bool())
                             .unwrap_or(false),
                         dry: false,
+                        // The HTTP door exposes the same fan-out ability as the
+                        // CLI, so a caller of the hosted app can run the swarm
+                        // without a shell.
+                        depth: crate::engine::depth_from_env(),
+                        subagents: v
+                            .get("subagents")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0) as usize,
+                        subagent_harnesses: v
+                            .get("subagent_harnesses")
+                            .and_then(|x| x.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|s| s.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                     };
                     let res = task_blocking(task, opts)?;
                     Ok(json_response(200, res))

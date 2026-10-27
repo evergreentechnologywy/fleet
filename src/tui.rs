@@ -89,6 +89,14 @@ impl Repl {
             direct_provider: self.provider.clone(),
             direct_api_key: None,
             cwd: None,
+            // The TUI is a top-level session, so it starts at whatever depth it
+            // was launched at (0 normally) and lets the engine hand a depth down
+            // to any subagent it spawns.
+            depth: fleet::engine::depth_from_env(),
+            // Fan-out is a per-run choice, not a sticky REPL mode, so it stays
+            // off here; `fleet run --subagents N` is how to ask for it.
+            subagents: 0,
+            subagent_harnesses: Vec::new(),
             continue_session: false,
         }
     }

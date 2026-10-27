@@ -54,6 +54,11 @@ pub fn run(a: RunArgs, json: bool) -> Result<()> {
         // working when it is pointed at fleet.
         cwd: a.session_dir.clone(),
         continue_session: a.continue_session,
+        // The delegation depth this process was started at, so a subagent's
+        // subagents are bounded too. Set by the parent through FLEET_DEPTH.
+        depth: fleet::engine::depth_from_env(),
+        subagents: a.subagents,
+        subagent_harnesses: a.subagent_harnesses.clone(),
     };
     let res = fleet::engine::run(&task, &opts)?;
 

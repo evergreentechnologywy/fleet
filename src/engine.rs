@@ -25,6 +25,19 @@ use crate::registry::{Harness, Registry};
 use crate::router::{Decision, Router};
 use crate::runner::Outcome;
 
+
+/// This process's delegation depth, from `FLEET_DEPTH`.
+///
+/// A subagent is a separate `fleet run` process, so depth cannot be counted in
+/// memory — it is handed down the environment by `runner::base_env` and read
+/// back here. An unset or unparsable value means a top-level run.
+pub fn depth_from_env() -> usize {
+    std::env::var("FLEET_DEPTH")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RunOptions {
     /// Force one harness (`--harness`), or `auto`.
@@ -55,6 +68,24 @@ pub struct RunOptions {
     pub cwd: Option<String>,
     /// Resume the most recent session (`-c`, omp compatibility).
     pub continue_session: bool,
+    /// How deep in a delegation tree this run is.
+    ///
+    /// Subagents are separate `fleet run` PROCESSES, so depth cannot be counted in
+    /// memory — it is handed down through the environment (`FLEET_DEPTH`) and read
+    /// back here. Without it `subagent_depth` was dead configuration: every
+    /// generation passed the literal 0, so the guard never tripped and delegation
+    /// recursed without a bound.
+    pub depth: usize,
+
+    /// Fan out to this many harnesses in parallel (`--subagents`).
+    ///
+    /// `0` leaves the count to the planner. A fan-out is a UNISON with a floor on
+    /// the number of harnesses, which is why it shares the executor rather than
+    /// growing its own: the swarm is an ability of the engine, not a service
+    /// beside it.
+    pub subagents: usize,
+    /// Restrict a fan-out to these harnesses. Empty means any enabled one.
+    pub subagent_harnesses: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,14 +199,24 @@ fn delegation_brief(h: &crate::registry::Harness, depth: usize) -> String {
     if h.subagents == 0 || depth >= h.subagent_depth {
         return String::new();
     }
-    let tool = std::env::var("FLEET_MEMORY_TOOL")
-        .unwrap_or_else(|_| "${FLEET_HOME}/bin/fleet".into());
+    // The path to the running binary, so the advertised command is one that
+    // exists. It used to be the literal `${FLEET_HOME}/bin/fleet`, which is
+    // never expanded here and is not where the installer puts the binary —
+    // delegation advertised a command that could not run.
+    let tool = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "fleet".into());
     let mut s = String::new();
     s.push_str(&format!(
         "You may delegate parts of this task to at most {} subagent(s).\n\n",
         h.subagents
     ));
     s.push_str(&format!("    {tool} run \"<subtask>\" -H <harness> -q\n\n"));
+    s.push_str(&format!(
+        "For several independent subtasks at once, one call runs them in parallel:\n\n    \
+         {tool} run \"<subtask>\" --subagents {} -q\n\n",
+        h.subagents
+    ));
     if !h.subagent_harnesses.is_empty() {
         s.push_str(&format!(
             "Allowed harnesses for a subagent: {}.\n\n",
@@ -297,6 +338,83 @@ fn run_job_with_fallback(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
     last
 }
 
+/// Run a batch of jobs, in parallel when the config allows it.
+///
+/// Extracted from `run` so a subagent fan-out reuses the SAME executor rather
+/// than growing a second, subtly different one — the two paths drifted apart the
+/// first time, and the parallel branch silently lost the fallback chain.
+///
+/// `order` is the harness order to restore afterwards: a fan-out returns in
+/// completion order, and a caller that shows results must not reorder between
+/// runs just because one harness was slow.
+///
+/// EVERY job goes through `run_job_with_fallback`, including the parallel ones.
+/// The parallel branch used to call `run_job` directly, which meant any plan with
+/// two or more concurrent harnesses — the normal unison case, since
+/// `max_parallel` defaults to 4 — skipped the `[fallback] chain` entirely. That
+/// is invisible when it works, and looks like "every harness failed" when it does
+/// not, which is exactly the failure the chain exists to prevent.
+fn run_jobs(
+    jobs: Vec<Job>,
+    router: &Arc<Router>,
+    ctx: &RunCtx,
+    parallel: usize,
+    order: &[String],
+) -> Vec<Outcome> {
+    if jobs.len() == 1 || parallel <= 1 {
+        return jobs
+            .iter()
+            .map(|j| run_job_with_fallback(j, router, ctx))
+            .collect();
+    }
+    // Fan out. Same process, one thread per harness, bounded.
+    let results: Arc<Mutex<Vec<Outcome>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = Vec::new();
+    let mut queue = jobs;
+    while !queue.is_empty() {
+        let batch: Vec<Job> = queue
+            .drain(..std::cmp::min(parallel, queue.len()))
+            .collect();
+        for j in batch {
+            // The router is shared, not borrowed: a worker thread must outlive
+            // this loop iteration, and the router holds the decision cache behind
+            // its own mutex.
+            let router = Arc::clone(router);
+            let session = ctx.session.to_string();
+            let run_id = ctx.run_id.to_string();
+            let db = ctx.db.to_path_buf();
+            let out = results.clone();
+            let led = crate::ledger::Ledger::default_path();
+            let verbose = ctx.verbose;
+            let enabled = ctx.enabled.to_vec();
+            handles.push(std::thread::spawn(move || {
+                let ctx = RunCtx {
+                    session: &session,
+                    run_id: &run_id,
+                    db: &db,
+                    verbose,
+                    ledger: &led,
+                    enabled: &enabled,
+                };
+                let o = run_job_with_fallback(&j, &router, &ctx);
+                out.lock().push(o);
+            }));
+        }
+        for h in handles.drain(..) {
+            let _ = h.join();
+        }
+    }
+    let mut got = results.lock().clone();
+    // Deterministic order: caller order, not completion order.
+    got.sort_by_key(|o| {
+        order
+            .iter()
+            .position(|n| n == &o.harness)
+            .unwrap_or(usize::MAX)
+    });
+    got
+}
+
 /// Run one job: route, execute, capture. Never panics; a failure is an Outcome
 /// with `ok = false`, because one bad harness must not take a run down.
 fn run_job(
@@ -337,7 +455,17 @@ fn run_job(
     env.push(("FLEET_HARNESS".into(), job.harness.name.clone()));
     env.push(("FLEET_MODEL".into(), d.model.clone()));
     env.push(("FLEET_EFFORT".into(), d.effort.clone()));
-    env.push(("FLEET_MEMORY_TOOL".into(), "${FLEET_HOME}/bin/fleet".into()));
+    // The path to THIS binary, resolved rather than templated. It used to be the
+    // literal string `${FLEET_HOME}/bin/fleet`, which is wrong twice over: it is
+    // never expanded on the way in, and `$FLEET_HOME/bin/` is not where the
+    // installer puts the binary. Delegation advertised a command that could not
+    // run, so the contract was cosmetic.
+    let memory_tool = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "fleet".to_string());
+    env.push(("FLEET_MEMORY_TOOL".into(), memory_tool.clone()));
+    // The delegation brief is composed before the run, so it cannot read the
+    // per-job env; it falls back to this same value.
     if !provider_name.is_empty() {
         env.push(("FLEET_PROVIDER".into(), provider_name.clone()));
     }
@@ -1056,6 +1184,63 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
         plan.mode = Mode::Single;
     }
 
+    // Fan-out: a unison run with a FLOOR on how many harnesses answer. This is the
+    // swarm expressed as an ability of the engine — one process, one run, N
+    // harnesses on the same brief concurrently — so it reuses the unison
+    // executor, the chooser, the fallback chain, and shared memory rather than
+    // duplicating any of them in a separate service.
+    if opts.subagents > 0 {
+        let mut pool: Vec<&crate::registry::Harness> = enabled
+            .iter()
+            .filter(|h| {
+                opts.subagent_harnesses.is_empty() || opts.subagent_harnesses.contains(&h.name)
+            })
+            .collect();
+        // Highest priority first, so a restricted pool still picks the best ones.
+        pool.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.name.cmp(&b.name)));
+        if pool.len() < opts.subagents {
+            eprintln!(
+                "fleet: --subagents {} but only {} harness(es) available{}; using {}",
+                opts.subagents,
+                pool.len(),
+                if opts.subagent_harnesses.is_empty() {
+                    String::new()
+                } else {
+                    format!(" in {:?}", opts.subagent_harnesses)
+                },
+                pool.len()
+            );
+        }
+        let want = opts.subagents.min(pool.len());
+        if want == 0 {
+            return Err(anyhow!(
+                "--subagents {} but no harness is available to serve them",
+                opts.subagents
+            ));
+        }
+        plan.mode = Mode::Unison;
+        plan.steps = pool
+            .iter()
+            .take(want)
+            .map(|h| planner::Step {
+                harness: h.name.clone(),
+                brief: task.clone(),
+                role: "work".into(),
+                why: format!("fan-out (--subagents {})", opts.subagents),
+            })
+            .collect();
+        plan.source = "fan-out".into();
+        plan.notes = format!("{} harness(es) in parallel via --subagents", want);
+        ledger.log(
+            "plan",
+            &run_id,
+            &session,
+            "fan-out",
+            &format!("{} harness(es): {}", want, plan.harness_names().join(",")),
+            true,
+        );
+    }
+
     mem.run_start(&run_id, &session, &task, &serde_json::to_string(&plan)?)?;
     ledger.log(
         "plan",
@@ -1094,7 +1279,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                     .find(|h| h.name == step.harness)
                     .cloned()
                     .ok_or_else(|| anyhow!("harness `{}` vanished", step.harness))?;
-                let delegation = delegation_brief(&h, 0);
+                let delegation = delegation_brief(&h, opts.depth);
                 let prompt = compose_prompt(
                     &task,
                     step,
@@ -1107,67 +1292,34 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                 jobs.push(Job { harness: h, prompt });
             }
             let parallel = router.config.parallel();
-            if jobs.len() == 1 || parallel <= 1 {
-                let ctx = RunCtx {
-                    session: &session,
-                    run_id: &run_id,
-                    db: &db,
-                    verbose: opts.verbose,
-                    ledger: &ledger,
-                    enabled: &enabled,
-                };
-                for j in &jobs {
-                    calls.push(run_job_with_fallback(j, &router, &ctx));
-                }
-            } else {
-                // Fan out. Same process, one thread per harness, bounded.
-                let results: Arc<Mutex<Vec<Outcome>>> = Arc::new(Mutex::new(Vec::new()));
-                let mut handles = Vec::new();
-                let mut queue = jobs;
-                while !queue.is_empty() {
-                    let batch: Vec<Job> = queue
-                        .drain(..std::cmp::min(parallel, queue.len()))
-                        .collect();
-                    for j in batch {
-                        // The router is shared, not borrowed: a worker thread
-                        // must outlive this loop iteration, and the router holds
-                        // the decision cache behind its own mutex.
-                        let router = Arc::clone(&router);
-                        let session = session.clone();
-                        let run_id = run_id.clone();
-                        let db = db.clone();
-                        let out = results.clone();
-                        let led = crate::ledger::Ledger::default_path();
-                        let verbose = opts.verbose;
-                        handles.push(std::thread::spawn(move || {
-                            let o = run_job(&j, &router, &session, &run_id, &db, verbose, &led);
-                            out.lock().push(o);
-                        }));
-                    }
-                    for h in handles.drain(..) {
-                        let _ = h.join();
-                    }
-                }
-                let mut got = results.lock().clone();
-                // Deterministic order: plan order, not completion order.
-                got.sort_by_key(|o| {
-                    plan.steps
-                        .iter()
-                        .position(|s| s.harness == o.harness)
-                        .unwrap_or(usize::MAX)
-                });
-                calls = got;
-            }
+            let ctx = RunCtx {
+                session: &session,
+                run_id: &run_id,
+                db: &db,
+                verbose: opts.verbose,
+                ledger: &ledger,
+                enabled: &enabled,
+            };
+            let order: Vec<String> = plan.steps.iter().map(|s| s.harness.clone()).collect();
+            calls = run_jobs(jobs, &router, &ctx, parallel, &order);
         }
         Mode::Serial => {
             let mut prior: Vec<(String, String)> = Vec::new();
+            let ctx = RunCtx {
+                session: &session,
+                run_id: &run_id,
+                db: &db,
+                verbose: opts.verbose,
+                ledger: &ledger,
+                enabled: &enabled,
+            };
             for step in &plan.steps {
                 let h = enabled
                     .iter()
                     .find(|h| h.name == step.harness)
                     .cloned()
                     .ok_or_else(|| anyhow!("harness `{}` vanished", step.harness))?;
-                let delegation = delegation_brief(&h, 0);
+                let delegation = delegation_brief(&h, opts.depth);
                 let prompt = compose_prompt(
                     &task,
                     step,
@@ -1178,7 +1330,11 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                     &delegation,
                 );
                 let job = Job { harness: h, prompt };
-                let o = run_job(&job, &router, &session, &run_id, &db, opts.verbose, &ledger);
+                // Same reliability layer as every other mode. A pipeline stage
+                // that fails currently contributes nothing to `prior`, so the
+                // next stage reasons over a hole — with the chain, the stage
+                // still produces an answer.
+                let o = run_job_with_fallback(&job, &router, &ctx);
                 if o.ok {
                     prior.push((o.harness.clone(), o.output.clone()));
                 }
