@@ -45,6 +45,12 @@ pub struct RunOptions {
     pub no_lessons: bool,
     /// Write the merged answer nowhere; return it only.
     pub dry: bool,
+    /// Call a model directly: no harness, no chooser. Set with `--model`.
+    pub direct_model: Option<String>,
+    /// Which provider serves `direct_model`.
+    pub direct_provider: Option<String>,
+    /// A key to use for `direct_provider`, overriding the declared one.
+    pub direct_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +186,111 @@ fn delegation_brief(h: &crate::registry::Harness, depth: usize) -> String {
          a whole model call. Put your subagents' findings in your answer; do not paste raw output.\n",
     );
     s
+}
+
+
+
+/// What every job needs and nothing per-call varies. Grouped because passing the
+/// same six things to three functions made the signatures unreadable and hid the
+/// one argument that DOES differ.
+struct RunCtx<'a> {
+    session: &'a str,
+    run_id: &'a str,
+    db: &'a std::path::Path,
+    verbose: bool,
+    ledger: &'a crate::ledger::Ledger,
+    enabled: &'a [crate::registry::Harness],
+}
+
+/// Run a job, and if it FAILS, try the configured alternates in order.
+///
+/// This is the reliability layer the owner asked for: a fleet that returns "every
+/// harness failed" is not usable, and the failure is almost never the task — it is
+/// one CLI's auth, one provider's outage, one model that refused. So a failure
+/// walks a chain of alternates, and the FIRST success wins.
+///
+/// The chain comes from `[fallback] chain` in fleet.toml, else a sane default of
+/// the direct-provider harnesses, which need no CLI and therefore cannot fail for
+/// a CLI-shaped reason. A direct provider is the bottom of every chain because it
+/// is the one thing that still works when a CLI, a chooser, or a wrapper is the
+/// broken part.
+///
+/// Never retries the harness that just failed, and never retries more than the
+/// configured budget, so a task cannot turn into an unbounded storm.
+fn run_job_with_fallback(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
+    let RunCtx {
+        session,
+        run_id,
+        db,
+        verbose,
+        ledger,
+        enabled,
+    } = *ctx;
+    let first = run_job(job, router, session, run_id, db, verbose, ledger);
+    if first.ok {
+        return first;
+    }
+
+    let cfg = crate::config::Config::load();
+    // The default chain is HARNESSES, not providers: a provider is reachable only
+    // through a harness, so naming one here would be naming something that cannot
+    // run a task. The direct-provider harnesses are the bottom of the chain
+    // because they need no CLI, and therefore cannot fail for a CLI-shaped reason.
+    let chain: Vec<String> = if cfg.fallback.chain.is_empty() {
+        vec!["muse".into(), "liquid".into(), "openrouter".into()]
+    } else {
+        cfg.fallback.chain.clone()
+    };
+    let budget = cfg.fallback.max_attempts.unwrap_or(3);
+    let mut attempts = 0usize;
+    let mut last = first;
+
+    for name in chain {
+        if attempts >= budget {
+            break;
+        }
+        if name == job.harness.name {
+            continue;
+        }
+        let Some(h) = enabled.iter().find(|h| h.name == name) else {
+            continue;
+        };
+        if !h.enabled {
+            continue;
+        }
+        attempts += 1;
+        ledger.log(
+            "fallback",
+            run_id,
+            session,
+            &h.name,
+            &format!(
+                "after `{}` failed: {}",
+                job.harness.name,
+                crate::runner::truncate(&last.error, 160)
+            ),
+            true,
+        );
+        // The alternate gets the same prompt; the chooser decides its model, so a
+        // harness that routes differently still gets a valid decision.
+        let alt = Job {
+            harness: h.clone(),
+            prompt: job.prompt.clone(),
+        };
+        let o = run_job(&alt, router, session, run_id, db, verbose, ledger);
+        if o.ok {
+            // Say which one actually answered, so the transcript never implies
+            // the first harness did the work.
+            let mut o = o;
+            o.output = format!(
+                "[answered by {} after {} failed]\n{}",
+                o.harness, job.harness.name, o.output
+            );
+            return o;
+        }
+        last = o;
+    }
+    last
 }
 
 /// Run one job: route, execute, capture. Never panics; a failure is an Outcome
@@ -504,6 +615,156 @@ fn expand_value(v: &str) -> String {
     }
 }
 
+
+/// Call one model directly: no harness, no planner, no chooser.
+///
+/// The provider is chosen explicitly when named (a declared provider, or a bare
+/// base URL), else the first enabled provider that accepts the model. The key is
+/// the one that provider declares, or `--api-key` when the caller supplies one —
+/// which is what lets a one-off endpoint be used without declaring it.
+#[allow(clippy::too_many_arguments)] // a one-shot path with no shared context yet
+fn run_direct(
+    task: &str,
+    model: &str,
+    provider: Option<&str>,
+    api_key: Option<&str>,
+    session: &str,
+    run_id: &str,
+    mem: &Memory,
+    ledger: &crate::ledger::Ledger,
+    dry: bool,
+) -> Result<RunResult> {
+    let started = std::time::Instant::now();
+    let providers = crate::providers::Providers::default_file();
+
+    // Resolve the endpoint: a named provider, a bare URL, or the first enabled
+    // provider that accepts this model.
+    let (base, key) = match provider {
+        Some(p) if p.starts_with("http") => {
+            let k = api_key
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("FLEET_API_KEY").ok())
+                .ok_or_else(|| anyhow::anyhow!("a bare URL provider needs --api-key"))?;
+            (p.to_string(), k)
+        }
+        Some(name) => {
+            let p = providers
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("no provider named `{name}`; see `fleet providers list`"))?;
+            let k = api_key
+                .map(|s| s.to_string())
+                .or_else(|| p.key_with(&crate::credential::Credentials::new(), false).ok().flatten())
+                .ok_or_else(|| anyhow::anyhow!("provider `{name}` has no usable credential"))?;
+            (p.base_url.clone(), k)
+        }
+        None => {
+            let p = providers
+                .all()
+                .into_iter()
+                .filter(|p| p.enabled && p.available())
+                .find(|p| p.accepts(model))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no enabled provider accepts `{model}`; name one with --provider, \
+                         or see `fleet providers list`"
+                    )
+                })?;
+            let k = p
+                .key_with(&crate::credential::Credentials::new(), false)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            (p.base_url.clone(), k)
+        }
+    };
+
+    let url = crate::runner::join_url(&base, "/v1/chat/completions");
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": task}],
+        // Reasoning counts against the same budget on several lanes, so the floor
+        // is generous: a small cap returns finish_reason=length with no content.
+        "max_tokens": 8192,
+    });
+
+    let mut req = ureq::post(&url)
+        .timeout(std::time::Duration::from_secs(300))
+        .set("Content-Type", "application/json");
+    if !key.is_empty() {
+        req = req.set("Authorization", &format!("Bearer {key}"));
+    }
+    let resp = req.send_string(&body.to_string());
+
+    let text = match resp {
+        Ok(r) => {
+            let v: serde_json::Value = r.into_json().unwrap_or_default();
+            v.get("choices")
+                .and_then(|c| c.as_array())
+                .and_then(|a| a.first())
+                .and_then(|c| c.get("message"))
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let body = r.into_string().unwrap_or_default();
+            ledger.log(
+                "direct",
+                run_id,
+                session,
+                model,
+                &format!("{url} -> {code}: {}", crate::runner::truncate(&body, 200)),
+                false,
+            );
+            anyhow::bail!("{model} via {url} -> HTTP {code}: {}", crate::runner::truncate(&body, 300));
+        }
+        Err(e) => {
+            ledger.log("direct", run_id, session, model, &format!("{url}: {e}"), false);
+            anyhow::bail!("{model} via {url}: {e}");
+        }
+    };
+
+    ledger.log("direct", run_id, session, model, &format!("{url} ok"), true);
+
+    if !dry {
+        let _ = mem.session_open(session, &crate::runner::truncate(task, 60));
+        let _ = mem.turn_add(&crate::memory::Turn {
+            session: session.to_string(),
+            seq: mem.next_seq(session)?,
+            ts: crate::now(),
+            role: "assistant".into(),
+            harness: "direct".into(),
+            model: model.to_string(),
+            text: text.clone(),
+            run_id: run_id.to_string(),
+            ok: true,
+        });
+    }
+
+    Ok(RunResult {
+        run: run_id.to_string(),
+        session: session.to_string(),
+        task: task.to_string(),
+        mode: "direct".into(),
+        plan: Vec::new(),
+        winner: "direct".into(),
+        lessons: Vec::new(),
+        calls: vec![Outcome {
+            harness: "direct".into(),
+            model: model.to_string(),
+            effort: String::new(),
+            ok: true,
+            output: text.clone(),
+            error: String::new(),
+            ms: started.elapsed().as_millis(),
+            route_reason: format!("direct call to {model} at {url}"),
+        }],
+        answer: text,
+        ms: started.elapsed().as_millis(),
+    })
+}
+
 /// Execute a run.
 pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
     let t0 = std::time::Instant::now();
@@ -523,6 +784,24 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
         (None, Some(s)) => s.clone(),
         (None, None) => format!("s-{run_id}"),
     };
+
+    // A DIRECT model call skips the planner, the harness, and the chooser: the
+    // caller named the model, so nothing is left to decide. This is the path for
+    // "I just want the model", and it is also the fleet's floor — it depends on
+    // no CLI, so no CLI-shaped failure can reach it.
+    if let Some(model) = opts.direct_model.as_deref().filter(|m| !m.is_empty()) {
+        return run_direct(
+            task,
+            model,
+            opts.direct_provider.as_deref(),
+            opts.direct_api_key.as_deref(),
+            &session,
+            &run_id,
+            &mem,
+            &ledger,
+            opts.dry,
+        );
+    }
 
     // Resume: the task becomes whatever was asked before, and the transcript is
     // replayed into every brief so no harness starts blind.
@@ -760,16 +1039,16 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
             }
             let parallel = router.config.parallel();
             if jobs.len() == 1 || parallel <= 1 {
+                let ctx = RunCtx {
+                    session: &session,
+                    run_id: &run_id,
+                    db: &db,
+                    verbose: opts.verbose,
+                    ledger: &ledger,
+                    enabled: &enabled,
+                };
                 for j in &jobs {
-                    calls.push(run_job(
-                        j,
-                        &router,
-                        &session,
-                        &run_id,
-                        &db,
-                        opts.verbose,
-                        &ledger,
-                    ));
+                    calls.push(run_job_with_fallback(j, &router, &ctx));
                 }
             } else {
                 // Fan out. Same process, one thread per harness, bounded.

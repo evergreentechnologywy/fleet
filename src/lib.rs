@@ -25,8 +25,10 @@
 
 pub mod api;
 pub mod catalog;
+pub mod comms;
 pub mod config;
 pub mod doctor;
+pub mod domain;
 pub mod keys;
 pub mod memory_backend;
 pub mod memory_share;
@@ -39,6 +41,7 @@ pub mod lessons;
 pub mod memory;
 pub mod mesh;
 pub mod paths;
+pub mod pay;
 pub mod planner;
 pub mod plugins;
 pub mod providers;

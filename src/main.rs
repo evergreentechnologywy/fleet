@@ -107,6 +107,22 @@ enum Command {
     #[command(subcommand)]
     Runners(RunnersCmd),
 
+    /// Texting, calling, and email — the fleet's own channels.
+    #[command(subcommand)]
+    Comms(CommsCmd),
+
+    /// Money: balances, quotes, the fleet's wallet, and gated payments.
+    #[command(subcommand)]
+    Pay(PayCmd),
+
+    /// Domains: what a name costs, and pointing it somewhere.
+    #[command(subcommand)]
+    Domain(DomainCmd),
+
+    /// Computer use: which lane drives a screen, and where it runs.
+    #[command(subcommand)]
+    Computer(ComputerCmd),
+
     /// Where everything lives.
     Paths,
 }
@@ -151,6 +167,24 @@ struct RunArgs {
     /// Only print the merged answer.
     #[arg(long, short = 'q')]
     quiet: bool,
+
+    /// Call a MODEL directly, with no agent CLI in between. Give the model id
+    /// (`--model deepseek-v4.1-flash`); pair it with `--provider` to choose which
+    /// endpoint serves it. This is the "I just want the model" path: no harness
+    /// decides anything, and no CLI can fail.
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Which provider serves `--model`: a name from `fleet providers list`, or a
+    /// base URL to use one that is not declared. Defaults to the first enabled
+    /// provider that accepts the model.
+    #[arg(long)]
+    provider: Option<String>,
+
+    /// The API key to use with `--provider`, when it is not the one that
+    /// provider declares. Passed through, never stored.
+    #[arg(long)]
+    api_key: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -517,6 +551,15 @@ enum ConfigCmd {
         #[arg(long)]
         effort: Option<String>,
     },
+    /// What the fleet optimises for: cost, speed, quality, or balanced.
+    /// With no argument, show the current choice and what it means.
+    Priority {
+        /// cost | speed | quality | balanced
+        value: Option<String>,
+        /// Set this priority for one harness only.
+        #[arg(long)]
+        harness: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -607,6 +650,134 @@ enum KeysCmd {
 }
 
 #[derive(Subcommand, Debug)]
+enum DomainCmd {
+    /// Every way the fleet can get a name, and what each costs.
+    Providers,
+    /// What a specific name would cost, and how it would be obtained.
+    Check { name: String },
+    /// Concrete free names for a label, so onboarding can offer one.
+    Free {
+        /// The word to build a name from, e.g. a project or client name.
+        label: String,
+    },
+    /// DNS records for a zone.
+    Dns {
+        zone: String,
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Create a DNS record.
+    Point {
+        zone: String,
+        /// Record name, e.g. `app` or `@`.
+        name: String,
+        /// A, AAAA, or CNAME.
+        #[arg(long, default_value = "A")]
+        kind: String,
+        /// The address or target.
+        content: String,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, default_value_t = 300)]
+        ttl: u32,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ComputerCmd {
+    /// Which computer-use lane is active, and what else is available.
+    Status,
+    /// Choose the lane: `ego` (the fleet default), `native`, or a harness name.
+    Use {
+        /// ego | native | <harness-name> | off
+        lane: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CommsCmd {
+    /// Which providers are configured for each channel.
+    Providers,
+    /// Send an SMS. A new recipient needs --confirm.
+    Sms {
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        provider: Option<String>,
+        /// Required the first time a number is messaged.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Place a call that speaks a script.
+    Call {
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        say: String,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Send email.
+    Email {
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        subject: String,
+        #[arg(long)]
+        body: String,
+    },
+    /// What the fleet has sent, from shared memory.
+    Log {
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PayCmd {
+    /// Read-only: what rails are configured and what they can see.
+    Balances {
+        /// Read a live balance from a named provider.
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// What a payment would cost and whether it would be allowed. Moves nothing.
+    Quote {
+        #[arg(long)]
+        amount: f64,
+        #[arg(long, default_value = "USD")]
+        currency: String,
+        #[arg(long)]
+        to: String,
+    },
+    /// Send money. Requires --approve, and a written policy.
+    Send {
+        #[arg(long)]
+        amount: f64,
+        #[arg(long, default_value = "USD")]
+        currency: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        approve: Option<String>,
+        /// Actually execute, once approved.
+        #[arg(long)]
+        execute: bool,
+    },
+    /// The fleet's own crypto wallet: show its address, or make one.
+    Wallet {
+        #[arg(long)]
+        new: bool,
+    },
+    /// The spending policy: what is allowed without a fresh token.
+    Policy,
+}
+
+#[derive(Subcommand, Debug)]
 enum RunnersCmd {
     /// Known cloud runners, what they need, and whether they are reachable.
     List,
@@ -671,6 +842,10 @@ fn real_main() -> Result<()> {
         Some(Command::Doctor(a)) => c2::doctor(a),
         Some(Command::Keys(c)) => c2::keys(c, cli.json),
         Some(Command::Runners(c)) => c2::runners(c, cli.json),
+        Some(Command::Comms(c)) => c2::comms(c, cli.json),
+        Some(Command::Pay(c)) => c2::pay(c, cli.json),
+        Some(Command::Domain(c)) => c2::domain(c, cli.json),
+        Some(Command::Computer(c)) => c2::computer(c, cli.json),
         Some(Command::Paths) => {
             c2::print_paths();
             Ok(())

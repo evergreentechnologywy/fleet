@@ -7,8 +7,9 @@ use fleet::ledger::Ledger;
 use fleet::memory::Memory;
 
 use crate::{
-    CatalogCmd, ConfigCmd, CredentialCmd, DeployArgs, DoctorArgs, KeysCmd, LedgerArgs,
-    LessonsCmd, MemoryCmd, OnboardArgs, PeersCmd, PluginsCmd, RunnersCmd, SelfmodCmd,
+    CatalogCmd, CommsCmd, ComputerCmd, ConfigCmd, CredentialCmd, DeployArgs, DoctorArgs, DomainCmd,
+    KeysCmd, LedgerArgs,
+    LessonsCmd, MemoryCmd, OnboardArgs, PayCmd, PeersCmd, PluginsCmd, RunnersCmd, SelfmodCmd,
     SessionsCmd, TargetsCmd,
 };
 
@@ -619,6 +620,62 @@ pub fn deploy(a: DeployArgs) -> Result<()> {
 
 pub fn config(c: ConfigCmd, json: bool) -> Result<()> {
     match c {
+        ConfigCmd::Priority { value, harness } => {
+            use fleet::router::Priority;
+            let cfg = fleet::config::Config::load();
+            match value {
+                None => {
+                    let fleet_prio = cfg.chooser.priority;
+                    println!("fleet priority: {fleet_prio:?} — {}", fleet_prio.explain());
+                    if !cfg.chooser.priority_by_harness.is_empty() {
+                        println!();
+                        println!("per-harness overrides:");
+                        for (h, p) in &cfg.chooser.priority_by_harness {
+                            println!("  {h:<14} {p:?} — {}", p.explain());
+                        }
+                    }
+                    println!();
+                    println!("options:");
+                    for p in [Priority::Cost, Priority::Speed, Priority::Quality, Priority::Balanced] {
+                        println!("  {:?}{:<9} {}", p, "", p.explain());
+                    }
+                    println!();
+                    println!("set:  fleet config priority cost");
+                    println!("      fleet config priority quality --harness omp");
+                    Ok(())
+                }
+                Some(v) => {
+                    let p = match v.to_lowercase().as_str() {
+                        "cost" | "cheap" | "cheapest" => Priority::Cost,
+                        "speed" | "fast" | "latency" => Priority::Speed,
+                        "quality" | "best" | "smartest" => Priority::Quality,
+                        "balanced" | "balance" | "default" => Priority::Balanced,
+                        other => anyhow::bail!(
+                            "unknown priority `{other}`; use cost, speed, quality, or balanced"
+                        ),
+                    };
+                    let mut cfg = cfg;
+                    match harness {
+                        Some(h) => {
+                            cfg.chooser.priority_by_harness.insert(h.clone(), p);
+                            println!("priority for harness `{h}`: {p:?} — {}", p.explain());
+                        }
+                        None => {
+                            cfg.chooser.priority = p;
+                            println!("fleet priority: {p:?} — {}", p.explain());
+                        }
+                    }
+                    let file = fleet::paths::config_path();
+                    let text = toml::to_string_pretty(&cfg)?;
+                    if let Some(parent) = file.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&file, text)?;
+                    println!("saved to {}", file.display());
+                    Ok(())
+                }
+            }
+        }
         ConfigCmd::Show => {
             let cfg = fleet::config::Config::load();
             if json {
@@ -1794,6 +1851,479 @@ pub fn runners(c: RunnersCmd, json: bool) -> Result<()> {
                     Ok(())
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- comms
+
+/// Texting, calling, and email. Every send is recorded in shared memory.
+pub fn comms(c: CommsCmd, json: bool) -> Result<()> {
+    use fleet::comms::{self, Channel};
+    match c {
+        CommsCmd::Providers => {
+            let rows: Vec<serde_json::Value> = [
+                (Channel::Sms, "sms"),
+                (Channel::Call, "call"),
+                (Channel::Email, "email"),
+            ]
+            .into_iter()
+            .map(|(ch, name)| {
+                let have = comms::available(ch);
+                serde_json::json!({
+                    "channel": name,
+                    "available": have,
+                    "configured": !have.is_empty(),
+                })
+            })
+            .collect();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
+            for r in &rows {
+                let have: Vec<&str> = r["available"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                    .unwrap_or_default();
+                println!(
+                    "  {:<7} {}",
+                    r["channel"].as_str().unwrap_or(""),
+                    if have.is_empty() {
+                        "(none configured)".to_string()
+                    } else {
+                        have.join(", ")
+                    }
+                );
+            }
+            println!();
+            println!("keys: `fleet keys show --group voice` and `--group messaging`");
+            Ok(())
+        }
+
+        CommsCmd::Sms {
+            to,
+            text,
+            provider,
+            confirm,
+        } => {
+            // A NEW recipient needs confirmation. Once the fleet has messaged a
+            // number, it is a known contact and does not ask again — making the
+            // tenth message need a flag is how a useful tool goes unused.
+            let known = fleet::memory::Memory::open_default()?
+                .get("comms", &format!("sms:{to}"))?
+                .is_some();
+            if !known && !confirm {
+                anyhow::bail!(
+                    "{to} has not been messaged before. Re-run with --confirm to send the first one."
+                );
+            }
+            let s = comms::sms(&to, &text, provider.as_deref())?;
+            comms::record(&s);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&s)?);
+            } else if s.ok {
+                println!("sms sent to {} via {} ({})", s.to, s.provider, s.id);
+            } else {
+                eprintln!("sms FAILED via {}: {}", s.provider, s.detail);
+            }
+            Ok(())
+        }
+
+        CommsCmd::Call {
+            to,
+            say,
+            provider,
+            confirm,
+        } => {
+            let known = fleet::memory::Memory::open_default()?
+                .get("comms", &format!("call:{to}"))?
+                .is_some();
+            if !known && !confirm {
+                anyhow::bail!(
+                    "{to} has not been called before. Re-run with --confirm to place the first call."
+                );
+            }
+            let s = comms::call(&to, &say, provider.as_deref())?;
+            comms::record(&s);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&s)?);
+            } else if s.ok {
+                println!("call placed to {} via {} ({})", s.to, s.provider, s.id);
+            } else {
+                eprintln!("call FAILED via {}: {}", s.provider, s.detail);
+            }
+            Ok(())
+        }
+
+        CommsCmd::Email { to, subject, body } => {
+            let s = comms::email(&to, &subject, &body)?;
+            comms::record(&s);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&s)?);
+            } else if s.ok {
+                println!("email sent to {}", s.to);
+            } else {
+                eprintln!("email FAILED: {}", s.detail);
+            }
+            Ok(())
+        }
+
+        CommsCmd::Log { limit } => {
+            let rows = fleet::memory::Memory::open_default()?.list("comms", "", limit)?;
+            if json {
+                let v: Vec<_> = rows
+                    .iter()
+                    .map(|(k, v)| serde_json::json!({"key": k, "value": v}))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            if rows.is_empty() {
+                println!("(nothing sent yet)");
+            }
+            for (k, v) in rows {
+                println!("  {k:<28} {v}");
+            }
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------- pay
+
+/// Money. Reading is free; moving it needs an approval token AND a written policy.
+pub fn pay(c: PayCmd, json: bool) -> Result<()> {
+    use fleet::pay;
+    match c {
+        PayCmd::Balances { provider } => {
+            match provider {
+                Some(p) => {
+                    let v = pay::provider_balance(&p)?;
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                    Ok(())
+                }
+                None => {
+                    let rows = pay::balances();
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&rows)?);
+                        return Ok(());
+                    }
+                    if rows.is_empty() {
+                        println!("no payment rails are configured");
+                        println!("keys: `fleet keys show --group money`");
+                        return Ok(());
+                    }
+                    for r in &rows {
+                        println!(
+                            "  {:<8} {:<14} {}",
+                            r["rail"].as_str().unwrap_or(""),
+                            r["provider"].as_str().unwrap_or(""),
+                            r["note"].as_str().unwrap_or("")
+                        );
+                    }
+                    Ok(())
+                }
+            }
+        }
+
+        PayCmd::Quote { amount, currency, to } => {
+            let q = pay::quote(amount, &currency, &to);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&q)?);
+                return Ok(());
+            }
+            println!("{amount:.2} {currency} to {to}");
+            println!(
+                "  allowed now: {} — {}",
+                if q.allowed { "yes" } else { "no" },
+                q.reason
+            );
+            if !q.allowed {
+                println!("  policy: {}", pay::policy_path().display());
+            }
+            Ok(())
+        }
+
+        PayCmd::Send {
+            amount,
+            currency,
+            to,
+            approve,
+            execute,
+        } => {
+            if !execute {
+                // The default is to STOP here and say what would happen. An
+                // agent's job is to get to this point; a human takes the last step.
+                let q = pay::quote(amount, &currency, &to);
+                println!("dry run — nothing was sent.");
+                println!(
+                    "  {amount:.2} {currency} to {to}: {} ({})",
+                    if q.allowed { "would be allowed" } else { "would be REFUSED" },
+                    q.reason
+                );
+                println!("  add --execute to actually send, once approved.");
+                return Ok(());
+            }
+            let v = pay::send(amount, &currency, &to, approve.as_deref())?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+
+        PayCmd::Wallet { new } => {
+            if new {
+                let addr = pay::wallet_new()?;
+                println!("wallet created: {addr}");
+                println!("key: {} (mode 600, never printed)", pay::wallet_path().display());
+                println!();
+                println!("Fund it before use; the key is the only copy, so back the file up.");
+            } else {
+                let addr = pay::wallet_address()?;
+                println!("address: {addr}");
+                println!("key:     {} (never shown)", pay::wallet_path().display());
+            }
+            Ok(())
+        }
+
+        PayCmd::Policy => {
+            let p = pay::policy();
+            println!("policy: {}", pay::policy_path().display());
+            println!(
+                "  auto-approve under: {:.2} USD",
+                p.auto_approve_under_usd
+            );
+            println!("  hard cap:           {:.2} USD", p.hard_cap_usd);
+            if p.allowlist.is_empty() {
+                println!("  allowlist:          (none)");
+            } else {
+                println!("  allowlist:          {}", p.allowlist.join(", "));
+            }
+            println!();
+            if p.hard_cap_usd <= 0.0 {
+                println!("A cap of 0 means the fleet may spend NOTHING — the safe default.");
+                println!("To allow spending, write {}:", pay::policy_path().display());
+                println!();
+                println!("    auto_approve_under_usd = 5.0");
+                println!("    hard_cap_usd = 50.0");
+                println!("    allowlist = [\"<your own wallet>\"]");
+            }
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------- domain
+
+/// Names: what they cost, and pointing them at something.
+pub fn domain(c: DomainCmd, json: bool) -> Result<()> {
+    use fleet::domain;
+    match c {
+        DomainCmd::Providers => {
+            let rows = domain::providers();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
+            println!("Free is real, but it is a SUBDOMAIN of a domain someone else owns:");
+            for p in rows.iter().filter(|p| p.cost.starts_with("free")) {
+                println!("  {:<14} {:<10} {}", p.name, if p.automated { "automated" } else { "manual" }, p.description);
+                println!("  {:<14} {}", "", p.trade);
+            }
+            println!();
+            println!("A name you OWN costs money:");
+            for p in rows.iter().filter(|p| !p.cost.starts_with("free")) {
+                println!(
+                    "  {:<14} {:<10} {}",
+                    p.name,
+                    if p.configured { "ready" } else { "needs key" },
+                    p.cost
+                );
+                println!("  {:<14} {}", "", p.trade);
+            }
+            println!();
+            println!("check a name:  fleet domain check myname.com");
+            println!("free names:    fleet domain free myproject");
+            Ok(())
+        }
+
+        DomainCmd::Check { name } => {
+            let o = domain::offer(&name, None);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&o)?);
+                return Ok(());
+            }
+            println!("{name}");
+            println!("  how:      {} via {}", o.kind, o.provider);
+            println!("  cost:     {}", o.cost);
+            println!("  automatable: {}", o.automated);
+            println!("  {}", o.note);
+            if o.kind == "free-subdomain" {
+                println!();
+                println!("Free subdomains need the provider's own approval flow; the fleet");
+                println!("can prepare it but a human submits it. See: {}", domain::providers().iter().find(|p| p.name == o.provider).map(|p| p.docs.clone()).unwrap_or_default());
+            }
+            Ok(())
+        }
+
+        DomainCmd::Free { label } => {
+            let names = domain::free_suggestions(&label);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&names)?);
+                return Ok(());
+            }
+            println!("free names for `{label}`:");
+            for n in &names {
+                let o = domain::offer(n, None);
+                println!("  {n:<28} {:<16} {}", o.provider, o.cost);
+            }
+            println!();
+            println!("EU.org names are permanent but manually approved; FreeDNS and DigitalPlat");
+            println!("are automated but sit under a domain you do not own.");
+            Ok(())
+        }
+
+        DomainCmd::Dns { zone, provider } => {
+            let p = domain::dns_provider(provider.as_deref())?;
+            let v = domain::dns_list(&p, &zone)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            println!("{zone} via {p}");
+            let records = v
+                .get("result")
+                .and_then(|r| r.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if records.is_empty() {
+                println!("  (no records, or an unexpected response shape)");
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            }
+            for r in records {
+                println!(
+                    "  {:<6} {:<28} {}",
+                    r.get("type").and_then(|x| x.as_str()).unwrap_or(""),
+                    r.get("name").and_then(|x| x.as_str()).unwrap_or(""),
+                    r.get("content").and_then(|x| x.as_str()).unwrap_or("")
+                );
+            }
+            Ok(())
+        }
+
+        DomainCmd::Point {
+            zone,
+            name,
+            kind,
+            content,
+            provider,
+            ttl,
+        } => {
+            let p = domain::dns_provider(provider.as_deref())?;
+            let v = domain::dns_create(&p, &zone, &name, &kind, &content, ttl)?;
+            let ok = v.get("success").and_then(|s| s.as_bool()).unwrap_or(true);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else if ok {
+                println!("{kind} {name}.{zone} -> {content} (via {p})");
+            } else {
+                eprintln!("failed: {}", serde_json::to_string_pretty(&v)?);
+            }
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------- computer
+
+/// Which lane drives a screen.
+///
+/// The fleet's browser lane is **ego lite** on every node (owner directive
+/// 2026-10-21), and that stays the default. Two things are allowed to differ:
+///
+/// * a harness with its OWN computer-use (a model that ships its own driver) may
+///   be preferred for a task, which is what `--lane <harness>` selects;
+/// * `native` for a desktop app rather than a browser, where ego lite does not
+///   apply at all.
+///
+/// The choice is stored so it is stated rather than assumed, and the doctor can
+/// report when a node's lane disagrees with the fleet's rule.
+pub fn computer(c: ComputerCmd, json: bool) -> Result<()> {
+    let cfg_path = fleet::paths::home().join("computer.toml");
+    #[derive(serde::Serialize, serde::Deserialize, Default)]
+    struct ComputerCfg {
+        #[serde(default)]
+        lane: Option<String>,
+    }
+    let cfg: ComputerCfg = std::fs::read_to_string(&cfg_path)
+        .ok()
+        .and_then(|t| toml::from_str(&t).ok())
+        .unwrap_or_default();
+    let active = cfg.lane.clone().unwrap_or_else(|| "ego".into());
+
+    match c {
+        ComputerCmd::Status => {
+            let ego = fleet::runner::which("ego-browser").is_some()
+                || fleet::runner::which("ego").is_some();
+            let rows = serde_json::json!({
+                "active": active,
+                "config": cfg_path.display().to_string(),
+                "lanes": {
+                    "ego": {
+                        "available": ego,
+                        "what": "ego lite: the fleet's ONLY interactive browser lane (owner 2026-10-21)",
+                        "use_for": "any browser task",
+                    },
+                    "native": {
+                        "available": true,
+                        "what": "OS-level control of a desktop app, not a browser",
+                        "use_for": "apps with no browser surface",
+                    },
+                    "harness": {
+                        "available": true,
+                        "what": "a harness that ships its OWN computer-use driver",
+                        "use_for": "when that model's driver is better for the task",
+                    },
+                },
+                "rule": "ego lite is the default and the rule; a harness driver or native is an explicit choice, never a silent fallback",
+            });
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
+            println!("computer-use lane: {active}");
+            println!("  config: {}", cfg_path.display());
+            println!();
+            println!("  ego      {}  the fleet's browser lane (default)", if ego { "ready " } else { "ABSENT" });
+            println!("  native   ready  OS-level desktop control, not a browser");
+            println!("  <harness>      a harness that ships its own computer-use driver");
+            println!();
+            println!("ego lite is the rule; the others are explicit choices, never a silent fallback.");
+            Ok(())
+        }
+        ComputerCmd::Use { lane } => {
+            let lane = lane.to_lowercase();
+            if lane != "ego" && lane != "native" && lane != "off" {
+                // A harness name is valid only if it exists, so a typo does not
+                // silently become "no lane at all".
+                let reg = fleet::registry::Registry::default_dir();
+                let (all, _) = reg.all();
+                if !all.iter().any(|h| h.name == lane) {
+                    anyhow::bail!(
+                        "`{lane}` is not ego, native, off, or a known harness. known harnesses: {}",
+                        all.iter().map(|h| h.name.as_str()).collect::<Vec<_>>().join(", ")
+                    );
+                }
+            }
+            let out = format!("lane = \"{lane}\"\n");
+            std::fs::write(&cfg_path, out)?;
+            println!("computer-use lane set to `{lane}`");
+            if lane == "ego" {
+                println!("ego lite is the fleet default: load the `ego-browser` skill before use.");
+            } else if lane != "off" {
+                println!("note: the owner directive makes ego lite the browser lane; `{lane}` is an");
+                println!("      explicit choice for tasks where it genuinely fits better.");
+            }
+            Ok(())
         }
     }
 }

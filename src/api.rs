@@ -260,6 +260,9 @@ pub fn serve(host: &str, port: u16) -> Result<()> {
                     }
                     let mode = v.get("mode").and_then(|m| m.as_str()).unwrap_or("auto");
                     let opts = RunOptions {
+                        direct_model: v.get("model").and_then(|x| x.as_str()).map(String::from),
+                        direct_provider: v.get("provider").and_then(|x| x.as_str()).map(String::from),
+                        direct_api_key: None,
                         harness: v
                             .get("harness")
                             .and_then(|t| t.as_str())

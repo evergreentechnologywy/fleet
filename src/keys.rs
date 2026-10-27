@@ -157,6 +157,22 @@ pub fn env_files() -> Vec<PathBuf> {
     ] {
         v.push(PathBuf::from(p));
     }
+    // The fleet keeps per-service secrets in their own files, one concern each
+    // (`twilio.env`, `signalwire.env`, `netcup-hermes.env`, ...). Not scanning
+    // them meant `keys import` reported "0 imported" for keys that were sitting
+    // right there — the inventory said missing while the machine had them.
+    if let Ok(entries) = std::fs::read_dir("/opt/fleet/secrets") {
+        let mut extra: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().and_then(|e| e.to_str()) == Some("env")
+                    || p.file_name().map(|f| f == ".env").unwrap_or(false)
+            })
+            .collect();
+        extra.sort();
+        v.extend(extra);
+    }
     if let Ok(h) = std::env::var("HOME") {
         v.push(PathBuf::from(&h).join(".env"));
     }

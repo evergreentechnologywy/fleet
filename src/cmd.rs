@@ -43,6 +43,9 @@ pub fn run(a: RunArgs, json: bool) -> Result<()> {
         brief_prefix,
         no_lessons: a.no_lessons,
         dry: false,
+        direct_model: a.model.clone(),
+        direct_provider: a.provider.clone(),
+        direct_api_key: a.api_key.clone(),
     };
     let res = fleet::engine::run(&task, &opts)?;
 

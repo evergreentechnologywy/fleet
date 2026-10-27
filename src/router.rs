@@ -59,6 +59,72 @@ pub struct ChooserConfig {
     /// Give up on the chooser after this long and use the fallback.
     #[serde(default)]
     pub timeout_s: Option<u64>,
+    /// What the fleet should optimise for when the chooser has a choice.
+    ///
+    /// This is the owner's dial, and it is deliberately three words rather than a
+    /// number: `cost` (spend as little as possible), `speed` (first token fast),
+    /// `quality` (the most capable model for the job, latency be damned), and
+    /// `balanced` (the default: cost first with speed as the tie-break, which is
+    /// what the fleet has always done).
+    #[serde(default)]
+    pub priority: Priority,
+    /// Per-harness overrides, so a harness that is only used for one job can have
+    /// its own priority without changing the fleet's.
+    #[serde(default)]
+    pub priority_by_harness: std::collections::HashMap<String, Priority>,
+}
+
+/// What the fleet optimises for. Maps onto the chooser's own vocabulary
+/// (`--latency`) plus `--budget`, so the meaning lives in one place and this enum
+/// is just the fleet-facing name for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    /// Cheapest acceptable model. The owner's own default.
+    Cost,
+    /// Fastest first token.
+    Speed,
+    /// Most capable model for the job; latency is not a constraint.
+    Quality,
+    /// Cost first, speed as the tie-break. The historical behaviour.
+    #[default]
+    Balanced,
+}
+
+impl Priority {
+    /// The chooser flags this priority turns into.
+    ///
+    /// `cost` and `balanced` both lean on the chooser's cost model (price per
+    /// call x credit pace); `speed` and `quality` set the latency need, which is
+    /// the axis the chooser actually balances capability against.
+    pub fn chooser_args(&self) -> Vec<String> {
+        match self {
+            Priority::Cost => vec!["--latency".into(), "balanced".into()],
+            Priority::Balanced => vec!["--latency".into(), "balanced".into()],
+            Priority::Speed => vec!["--latency".into(), "fast".into()],
+            Priority::Quality => vec!["--latency".into(), "quality".into()],
+        }
+    }
+
+    /// One line explaining what this priority will do, for `fleet config show`.
+    pub fn explain(&self) -> &'static str {
+        match self {
+            Priority::Cost => "cheapest acceptable model; latency is not a goal",
+            Priority::Speed => "fastest first token; capability is the tie-break",
+            Priority::Quality => "most capable model for the job; latency is not a constraint",
+            Priority::Balanced => "cost first, speed as the tie-break (the historical behaviour)",
+        }
+    }
+}
+
+impl ChooserConfig {
+    /// The priority in effect for this harness: its override, else the fleet's.
+    pub fn priority_for(&self, harness: &str) -> Priority {
+        self.priority_by_harness
+            .get(harness)
+            .copied()
+            .unwrap_or(self.priority)
+    }
 }
 
 impl ChooserConfig {
@@ -137,6 +203,25 @@ pub struct Config {
     /// the default path, which is what every existing install already is.
     #[serde(default)]
     pub memory: MemoryConfig,
+    /// What to try when a harness fails.
+    #[serde(default)]
+    pub fallback: FallbackConfig,
+}
+
+/// What to try when a harness fails.
+///
+/// The chain names HARNESSES, because a provider cannot run a task on its own —
+/// it is reached through a harness. The default is the direct-provider harnesses,
+/// which need no CLI and so cannot fail for a CLI-shaped reason.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FallbackConfig {
+    /// Harness names to try, in order, after the first one fails.
+    #[serde(default)]
+    pub chain: Vec<String>,
+    /// Hard cap on how many alternates one task may try, so a failure cannot
+    /// become a storm.
+    #[serde(default)]
+    pub max_attempts: Option<usize>,
 }
 
 /// How the fleet remembers. A backend is a name the engine understands plus the
@@ -260,11 +345,39 @@ impl Router {
             return hit;
         }
 
-        let mut d = self.ask(task, &harness.name).unwrap_or_else(|e| Decision {
-            source: "fallback".into(),
-            reason: format!("chooser failed: {e}"),
-            ..Default::default()
-        });
+        let mut d = match self.ask(task, &harness.name) {
+            Ok(d) => d,
+            Err(e) => {
+                // The chooser is the one component whose failure takes the whole
+                // fleet down, so a failure here must still produce a usable
+                // decision. The configured default model is used when there is
+                // one; otherwise the harness's own first declared model; and
+                // only if both are absent does the decision stay empty, which the
+                // caller reports rather than silently running nothing.
+                let m = self
+                    .config
+                    .defaults
+                    .model
+                    .clone()
+                    .filter(|m| !m.is_empty())
+                    .or_else(|| harness.models.iter().find(|m| *m != "*").cloned())
+                    .unwrap_or_default();
+                Decision {
+                    model: m,
+                    effort: self
+                        .config
+                        .defaults
+                        .effort
+                        .clone()
+                        .or_else(|| harness.effort.clone())
+                        .unwrap_or_default(),
+                    lane: "fallback".into(),
+                    source: "fallback".into(),
+                    reason: format!("chooser failed ({e}); used the configured default"),
+                    ..Default::default()
+                }
+            }
+        };
 
         // Harness ceiling: never hand a harness a model it did not declare.
         if !d.model.is_empty() && !harness.accepts(&d.model) {
@@ -346,13 +459,23 @@ impl Router {
             .ok_or_else(|| anyhow!("chooser.command is not set"))?;
         // A very long task is bad for argv; the head decides the routing.
         let brief: String = task.chars().take(4000).collect();
-        let args: Vec<String> = self
+        let mut args: Vec<String> = self
             .config
             .chooser
             .args
             .iter()
-            .map(|a| a.replace("{prompt}", &brief).replace("{harness}", harness))
+            .map(|a| {
+                a.replace("{prompt}", &brief)
+                    .replace("{harness}", harness)
+                    .replace("{priority}", &format!("{:?}", self.config.chooser.priority_for(harness)).to_lowercase())
+            })
             .collect();
+        // The priority dial becomes chooser flags. Appended rather than baked
+        // into `args` so a caller can change the priority without editing the
+        // command line, and so an explicit flag in `args` still wins by coming
+        // first for the chooser's own argument parser.
+        let prio = self.config.chooser.priority_for(harness);
+        args.extend(prio.chooser_args());
         let out = crate::runner::run_capture(&cmd, &args, &[], None, self.config.chooser.timeout())
             .context("running chooser")?;
         if !out.ok {
