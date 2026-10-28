@@ -391,6 +391,71 @@ fn make_worktree(repo: &std::path::Path, run_id: &str, harness: &str) -> Option<
     Some(dir)
 }
 
+/// Drop a worktree that carries no changes; KEEP one that does.
+///
+/// A clean checkout is pure noise, but a dirty one is the work product: merging
+/// what you want is the whole reason `--worktree` exists, so deleting it would
+/// throw the result away. Either way the path is said out loud — a run that left
+/// edits behind must not be silent about where they are.
+fn release_worktree(repo: &std::path::Path, wt: &std::path::Path, harness: &str) {
+    let dirty = std::process::Command::new("git")
+        .arg("-C")
+        .arg(wt)
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .map(|o| !o.stdout.is_empty())
+        // If we cannot read the status we must assume it is dirty: pruning a
+        // checkout because `git status` failed is how work gets deleted.
+        .unwrap_or(true);
+    if dirty {
+        eprintln!(
+            "fleet: `{harness}` left changes in {} (kept for you to merge)",
+            wt.display()
+        );
+        return;
+    }
+    let removed = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "remove", "--force"])
+        .arg(wt)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !removed {
+        let _ = std::fs::remove_dir_all(wt);
+    }
+    // The per-run directory exists only to hold these checkouts.
+    if let Some(parent) = wt.parent() {
+        let _ = std::fs::remove_dir(parent);
+    }
+}
+
+/// Remove a run directory once nothing of value is left in it.
+///
+/// Each run creates `runs/<id>/<harness>/`, which is where a `--worktree`
+/// checkout lives. Without this those directories accumulate forever: measured
+/// 2026-10-27, 590 of them on the hub, every one holding only EMPTY per-harness
+/// subdirectories.
+///
+/// Only empty entries are removed, so a checkout kept for merging — the whole
+/// point of `--worktree` — is never touched.
+fn prune_run_dir(run_id: &str) {
+    let dir = crate::paths::runs_dir().join(run_id);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            // Fails when non-empty, which is exactly the guarantee we want.
+            let _ = std::fs::remove_dir(&p);
+        }
+    }
+    let _ = std::fs::remove_dir(&dir);
+}
+
 /// Run a batch of jobs, in parallel when the config allows it.
 ///
 /// Extracted from `run` so a subagent fan-out reuses the SAME executor rather
@@ -415,10 +480,12 @@ fn run_jobs(
     order: &[String],
 ) -> Vec<Outcome> {
     if jobs.len() == 1 || parallel <= 1 {
-        return jobs
+        let got: Vec<Outcome> = jobs
             .iter()
             .map(|j| run_job_with_fallback(j, router, ctx))
             .collect();
+        prune_run_dir(ctx.run_id);
+        return got;
     }
     // Fan out. Same process, one thread per harness, bounded.
     let results: Arc<Mutex<Vec<Outcome>>> = Arc::new(Mutex::new(Vec::new()));
@@ -469,6 +536,7 @@ fn run_jobs(
             .position(|n| n == &o.harness)
             .unwrap_or(usize::MAX)
     });
+    prune_run_dir(ctx.run_id);
     got
 }
 
@@ -786,6 +854,9 @@ fn run_job(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
                 ),
                 true,
             );
+            if let Some(wt) = &isolated {
+                release_worktree(cwd, wt, &job.harness.name);
+            }
             Outcome {
                 harness: job.harness.name.clone(),
                 model: d.model.clone(),
@@ -828,6 +899,9 @@ fn run_job(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
                 ),
                 false,
             );
+            if let Some(wt) = &isolated {
+                release_worktree(cwd, wt, &job.harness.name);
+            }
             Outcome {
                 harness: job.harness.name.clone(),
                 model: d.model.clone(),
