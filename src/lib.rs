@@ -23,6 +23,7 @@
 //! * [`api`] — the same engine over HTTP.
 //! * [`webapp`] — a single embedded page that drives that API.
 
+pub mod agui;
 pub mod api;
 pub mod catalog;
 pub mod comms;

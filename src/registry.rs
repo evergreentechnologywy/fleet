@@ -35,6 +35,13 @@ pub enum Kind {
     /// ARE a model — they are how `fleet` reaches a provider directly, with no
     /// CLI in between.
     OpenaiCompat,
+    /// An AG-UI agent backend (`ag-ui-protocol/ag-ui`, spec 1.0). The `[http]`
+    /// table gives the base URL and, in `chat_path`, the SSE endpoint (default
+    /// `/agui`). This is how an agent that already speaks AG-UI — LangGraph,
+    /// Mastra, PydanticAI, Claude Agent SDK, or the fleet's own bridge —
+    /// becomes a harness the chooser, the ledger and the lessons loop know
+    /// about. Nothing else changes: one POST, one event stream.
+    Agui,
 }
 
 /// How the model is chosen for this harness.
@@ -298,6 +305,30 @@ impl Harness {
                         "{}: kind = \"{:?}\" needs `[http] base_url`",
                         path.display(),
                         self.kind
+                    );
+                }
+            }
+            Kind::Agui => {
+                let have_url = self
+                    .http
+                    .as_ref()
+                    .map(|h| !h.base_url.is_empty())
+                    .unwrap_or(false);
+                if !have_url {
+                    bail!(
+                        "{}: kind = \"agui\" needs `[http] base_url` (the AG-UI endpoint, e.g. http://127.0.0.1:8797)",
+                        path.display()
+                    );
+                }
+                // An AG-UI call carries no model: the remote agent owns its own
+                // model choice. Declaring `route = "jev"` would spend a chooser
+                // call whose answer is then discarded, so it is a config error
+                // rather than a silently wasted token.
+                if matches!(self.route, Route::Jev | Route::SelfRouting) {
+                    bail!(
+                        "{}: kind = \"agui\" cannot use route = \"{:?}\" — the remote agent picks its own model; use route = \"native\"",
+                        path.display(),
+                        self.route
                     );
                 }
             }

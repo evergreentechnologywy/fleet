@@ -1243,7 +1243,20 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
             false,
         );
     }
-    let enabled: Vec<Harness> = all.iter().filter(|h| h.enabled).cloned().collect();
+    // Recursion guard. An AG-UI harness can point at a backend that answers by
+    // calling this same engine — the fleet's own bridge does exactly that. Without
+    // this, an auto-planned run inside such a backend would pick the AG-UI harness
+    // again and fork itself until the box dies. One level is the useful depth
+    // (the bridge sets the variable), so nested runs never plan an AG-UI harness.
+    let nested = std::env::var("FLEET_NESTED_RUN")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+    let mut enabled: Vec<Harness> = all
+        .iter()
+        .filter(|h| h.enabled)
+        .filter(|h| !(nested && h.kind == crate::registry::Kind::Agui))
+        .cloned()
+        .collect();
     if enabled.is_empty() {
         let hint = if errors.is_empty() {
             format!(
@@ -1261,7 +1274,22 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                     .join("; ")
             )
         };
-        return Err(anyhow!(hint));
+        // A RELATIVE fleet home is almost always a missing environment, not a
+        // missing harness: a system service inherits neither HOME nor
+        // FLEET_HOME, so the engine searched `./.fleet` and reported "no
+        // harnesses" — true, and completely misleading.
+        let rel = {
+            let home = crate::paths::home();
+            home.is_relative().then(|| {
+                format!(
+                    " NOTE: the fleet home resolved to the RELATIVE path {} because neither \
+                     FLEET_HOME nor HOME is set. That happens under a systemd unit; set \
+                     Environment=HOME=/root (or FLEET_HOME) on the service.",
+                    home.display()
+                )
+            })
+        };
+        return Err(anyhow!("{hint}{}", rel.unwrap_or_default()));
     }
 
     // A named harness is checked against the live set before anything else
@@ -1279,12 +1307,24 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
             let known: Vec<&str> = enabled.iter().map(|h| h.name.as_str()).collect();
             let installed: Vec<&str> = all.iter().map(|h| h.name.as_str()).collect();
             if installed.contains(&name) {
-                // Substitute the first runnable rung of the fallback chain. This
-                // is what makes "reliable" true: asking for a harness that cannot
-                // run must not be the end of the task, and the substitution is
-                // REPORTED so the transcript never implies the requested harness
-                // did the work.
-                let cfg = crate::config::Config::load();
+                // `enabled = false` means "do not AUTO-plan me", not "I cannot be
+                // addressed". A harness the caller named on the command line and
+                // that probes runnable is used as-is: substituting here would
+                // break the one instruction that is never second-guessed. Only a
+                // harness that cannot actually run falls through to the chain.
+                let explicitly_runnable = all
+                    .iter()
+                    .find(|h| h.name == name && !enabled.iter().any(|e| e.name == h.name))
+                    .filter(|h| crate::runner::probe(h).0);
+                if let Some(h) = explicitly_runnable {
+                    enabled.push(h.clone());
+                } else {
+                    // Substitute the first runnable rung of the fallback chain. This
+                    // is what makes "reliable" true: asking for a harness that cannot
+                    // run must not be the end of the task, and the substitution is
+                    // REPORTED so the transcript never implies the requested harness
+                    // did the work.
+                    let cfg = crate::config::Config::load();
                 let chain = if cfg.fallback.chain.is_empty() {
                     vec!["muse".to_string(), "liquid".to_string(), "opencode-free".to_string()]
                 } else {
@@ -1308,6 +1348,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                         // pretend otherwise.
                         eprintln!("fleet: `{name}` is not runnable and the fallback chain has no runnable member");
                     }
+                }
                 }
             } else {
                 return Err(anyhow!(

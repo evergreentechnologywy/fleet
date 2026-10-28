@@ -423,6 +423,14 @@ pub fn call(
                 Err(e) => Err(anyhow!("harness `{}`: {e}", harness.name)),
             }
         }
+        Kind::Agui => {
+            let out = crate::agui::call(harness, prompt, on_line)?;
+            Ok(Called {
+                text: out.text,
+                tokens_in: out.tokens_in,
+                tokens_out: out.tokens_out,
+            })
+        }
     }
 }
 
@@ -537,6 +545,22 @@ pub fn probe(h: &crate::registry::Harness) -> (bool, String) {
             match ureq::get(&url).timeout(Duration::from_secs(3)).call() {
                 Ok(_) => (true, "listening".into()),
                 Err(ureq::Error::Status(code, _)) => (true, format!("listening (HTTP {code})")),
+                Err(e) => (false, format!("unreachable: {e}")),
+            }
+        }
+        Kind::Agui => {
+            // AG-UI backends are asked for /health, the same liveness probe this
+            // engine exposes. A backend that does not implement it still answers
+            // something, and any HTTP answer proves the socket is alive.
+            let base = h
+                .http
+                .as_ref()
+                .map(|s| s.base_url.clone())
+                .unwrap_or_default();
+            let url = join_url(&base, "/health");
+            match ureq::get(&url).timeout(Duration::from_secs(3)).call() {
+                Ok(_) => (true, "AG-UI listening".into()),
+                Err(ureq::Error::Status(code, _)) => (true, format!("AG-UI listening (HTTP {code})")),
                 Err(e) => (false, format!("unreachable: {e}")),
             }
         }
