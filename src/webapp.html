@@ -71,6 +71,20 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .err { color: var(--bad); font-size: 13px; }
   .hint { color: var(--dim); font-size: 13px; margin-top: 6px; }
+  /* chat: the same surface omp's app gives, over the orchestrated engine */
+  #chatlog { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+  .msg { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+         background: var(--panel); }
+  .msg.me { border-color: #2b3a55; background: #161d29; }
+  .msg .who { font-size: 12px; color: var(--dim); margin-bottom: 6px;
+              display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .msg .text { white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+  .msg .text.mono { font-family: var(--mono); font-size: 13px; }
+  .progress { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 8px;
+              font-family: var(--mono); font-size: 12px; color: var(--dim);
+              max-height: 190px; overflow: auto; white-space: pre-wrap; }
+  .composer { position: sticky; bottom: 0; background: var(--bg);
+              border-top: 1px solid var(--line); border-radius: 10px 10px 0 0; }
 </style>
 </head>
 <body>
@@ -85,7 +99,8 @@
 </header>
 
 <nav id="nav">
-  <button data-tab="run" aria-selected="true">Run</button>
+  <button data-tab="chat" aria-selected="true">Chat</button>
+  <button data-tab="run">Run</button>
   <button data-tab="harnesses">Harnesses</button>
   <button data-tab="sessions">Sessions</button>
   <button data-tab="memory">Memory</button>
@@ -101,8 +116,34 @@
 
 <main>
 
+  <!-- --------------------------------------------------------------- chat -->
+  <section id="tab-chat" class="on">
+    <div class="card">
+      <div class="row">
+        <select id="chatHarness" style="width:auto"><option value="auto">auto — planner picks</option></select>
+        <select id="chatMode" style="width:auto">
+          <option value="single" selected>one harness — cheapest</option>
+          <option value="auto">auto — planner may fan out</option>
+          <option value="unison">unison — several answer, merged</option>
+          <option value="serial">serial — each sees the last</option>
+        </select>
+        <span class="chip" id="chatSession">new conversation</span>
+        <button class="ghost" id="chatNew" style="margin-left:auto">new chat</button>
+      </div>
+      <div class="hint">Same engine as <span class="mono">fleet run</span>, same sessions, same shared memory — the conversation continues on the next message.</div>
+    </div>
+    <div id="chatlog"></div>
+    <div class="card composer">
+      <textarea id="chatInput" placeholder="Ask fleet anything. It decides which harness answers and streams the work back."></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="go" id="chatSend">Send</button>
+        <span id="chatStatus" class="dim"></span>
+      </div>
+    </div>
+  </section>
+
   <!-- ---------------------------------------------------------------- run -->
-  <section id="tab-run" class="on">
+  <section id="tab-run">
     <div class="card">
       <textarea id="task" placeholder="Give it a task. Several harnesses can answer it at once."></textarea>
       <div class="row" style="margin-top:10px">
@@ -351,6 +392,123 @@ $("#nav").addEventListener("click", (e) => {
   if (b.dataset.tab === "harnesses") loadHarnesses();
 });
 
+
+// ---- chat -----------------------------------------------------------------
+// The conversational door. It uses the SAME engine call as everything else —
+// `/v1/run?sse=1` — so a message here and a `fleet run` in a shell are the same
+// run, on the same session, writing the same shared memory. Nothing about the
+// chat is a second implementation.
+let chatSessionId = null;
+
+function chatBubble(role, html, cls) {
+  const el = document.createElement("div");
+  el.className = "msg" + (role === "me" ? " me" : "");
+  el.innerHTML = `<div class="who">${esc(role === "me" ? "you" : role)}</div>` +
+                 `<div class="text ${cls || ""}"></div>`;
+  el.querySelector(".text").innerHTML = html;
+  $("#chatlog").appendChild(el);
+  window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+  return el;
+}
+
+async function chatSend() {
+  const text = $("#chatInput").value.trim();
+  if (!text) return;
+  $("#chatInput").value = "";
+  $("#chatSend").disabled = true;
+  $("#chatStatus").innerHTML = '<span class="spinner"></span> working…';
+
+  chatBubble("me", esc(text).replace(/\n/g, "<br>"));
+
+  const bubble = chatBubble("fleet", '<span class="dim">thinking…</span>');
+  const textEl = bubble.querySelector(".text");
+  textEl.classList.add("mono");
+  const progBox = document.createElement("div");
+  progBox.className = "progress";
+  bubble.appendChild(progBox);
+
+  const mode = $("#chatMode").value;
+  const body = { task: text, harness: $("#chatHarness").value, async: true };
+  // `single` is not a plan mode: it pins the count while the planner still picks
+  // WHICH harness. Sending it as `mode` would fall through to the planner's
+  // fan-out and quietly cost four calls instead of one.
+  if (mode === "single") body.single = true; else body.mode = mode;
+  if (chatSessionId) body.resume = chatSessionId;
+
+  const t0 = Date.now();
+  try {
+    const job = await api("/v1/run?async=1", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    // Poll the run: `since` is a cursor into its line buffer, so each poll only
+    // carries what is new. The server flushes nothing incrementally (tiny_http
+    // buffers the socket), which is why this is a poll and not an event stream.
+    let cursor = 0;
+    let done = false;
+    while (!done) {
+      await new Promise(r => setTimeout(r, 700));
+      const d = await api(`/v1/runs/${encodeURIComponent(job.run)}?since=${cursor}`);
+      if ((d.lines || []).length) {
+        cursor = d.cursor;
+        progBox.textContent = d.lines.join("\n");
+        progBox.scrollTop = progBox.scrollHeight;
+      }
+      if (d.state === "done") {
+        done = true;
+        chatSessionId = d.session || chatSessionId;
+        $("#chatSession").textContent = "session " + (chatSessionId || "—").slice(0, 12);
+        if (d.error) {
+          textEl.innerHTML = `<span class="err">${esc(d.error)}</span>`;
+          $("#chatStatus").innerHTML = `<span class="err">failed</span>`;
+        } else {
+          const r = d.result || {};
+          textEl.innerHTML = esc(r.answer || "(no answer)");
+          progBox.innerHTML = (r.calls || []).map(c =>
+            `<div>${c.ok ? "✓" : "✗"} ${esc(c.harness)} · ${esc(c.model || "—")} · ${c.ms}ms` +
+            `${c.ok ? "" : " — " + esc((c.error || "").slice(0, 200))}</div>`).join("");
+          $("#chatStatus").textContent =
+            `${r.mode} · ${(r.calls || []).length} call(s) · ` +
+            `${((Date.now() - t0) / 1000).toFixed(1)}s · winner ${r.winner || "—"}`;
+        }
+      }
+    }
+  } catch (e) {
+    textEl.innerHTML = `<span class="err">${esc(e.message)}</span>`;
+    $("#chatStatus").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  } finally {
+    $("#chatSend").disabled = false;
+    health();
+  }
+}
+
+$("#chatSend").addEventListener("click", chatSend);
+$("#chatInput").addEventListener("keydown", (e) => {
+  // Enter sends, Shift+Enter is a newline. A chat box that needs a mouse is not
+  // a chat box.
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(); }
+});
+$("#chatNew").addEventListener("click", () => {
+  chatSessionId = null;
+  $("#chatlog").innerHTML = "";
+  $("#chatSession").textContent = "new conversation";
+  $("#chatStatus").textContent = "";
+});
+
+// Keep the chat's harness list in step with the registry.
+function fillChatHarnesses(rows) {
+  const sel = $("#chatHarness");
+  const keep = sel.value;
+  sel.innerHTML = '<option value="auto">auto — planner picks</option>' +
+    rows.filter(h => h.enabled && h.available)
+        .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+        .map(h => `<option value="${esc(h.name)}">${esc(h.name)} — ${esc(h.description || "")}</option>`)
+        .join("");
+  if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+}
+
 // ---- health ---------------------------------------------------------------
 async function health() {
   try {
@@ -578,6 +736,7 @@ async function loadHarnesses() {
     const errs = (d.errors || []).map(e =>
       `<tr><td colspan="7" class="bad mono">${esc(e.path)}: ${esc(e.error)}</td></tr>`).join("");
     $("#hlist").innerHTML = `<tbody>${rows}${errs}</tbody>`;
+    fillChatHarnesses(d.harnesses);
     $("#hlist").querySelectorAll("button[data-rm]").forEach(b => b.addEventListener("click", async () => {
       if (!confirm(`Remove harness "${b.dataset.rm}"? It leaves the next run.`)) return;
       await api("/v1/harnesses/" + encodeURIComponent(b.dataset.rm), { method: "DELETE" });

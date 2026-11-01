@@ -117,6 +117,19 @@ route = "self-routing"
 into the child process, so the harness discovers its options rather than having
 them hardcoded.
 
+### Standing instructions for every run
+
+```toml
+[defaults]
+brief = "/opt/fleet/AGENT_BOOTSTRAP_PREAMBLE.md"   # a path, or inline text
+```
+
+Prepended to every brief by the engine itself, so it applies at every door —
+`fleet run`, the TUI, the HTTP app, the chat shim and the queue — instead of only
+where someone remembered a `--brief` flag. Without it, the same task answered by
+`codex` silently skipped rules that `omp` follows, and the engine's answer
+depended on which harness won a tie.
+
 ## Run
 
 ```console
@@ -128,6 +141,7 @@ $ fleet run --resume last                   # continue a conversation
 ```
 
 ```console
+$ fleet run "your task" --single               # ONE harness: the planner's top pick
 $ fleet run "your task" --subagents 3          # fan out: 3 harnesses at once
 $ fleet run "your task" --subagents 3 --worktree   # ...each in its own checkout
 $ fleet run "your task" --subagents 4 \
@@ -147,9 +161,15 @@ document it. Depth travels through `FLEET_DEPTH`, because a subagent is a separa
 process — without that, `subagent_depth` would be dead configuration and
 delegation would recurse without a bound.
 
+`auto` is the default and it will fan out: when the top two harnesses score within
+10 points of each other the planner runs up to four, which is the premise of the
+engine and 4 paid calls for a question that needed one. `--single` keeps the
+planner's ranking but takes only the first step — routed, not pinned, one call.
+Use it for chat turns, queued jobs, and anything on a budget.
+
 | mode | what happens |
 |---|---|
-| **single** | one harness answers |
+| **single** | one harness answers: the planner's top-ranked one (`--single`), or the one you named (`-H`) |
 | **unison** | several answer the same brief; the strongest answer leads and the rest are appended, ranked, with failures shown |
 | **serial** | each harness sees what the previous ones produced, so a verifier can check a worker |
 
@@ -228,14 +248,35 @@ $ fleet tui -r s-abc123           # resume one
 ```
 
 A line-editing REPL over the engine: every line is a task, and a line starting
-with `/` is a command (`/harness`, `/model`, `/unison`, `/serial`, `/sessions`,
-`/memory`, `/doctor`, `/help`). Deliberately **not** full-screen — a scrolling
+with `/` is a command (`/harness`, `/model`, `/single`, `/unison`, `/serial`,
+`/sessions`, `/memory`, `/doctor`, `/help`). Deliberately **not** full-screen — a scrolling
 REPL survives an 80-column ssh pipe, a tmux pane, and a terminal that never sends
 `SIGWINCH`, and needs no cursor-addressing library.
 
+`/single` is **on** by default: the planner still ranks the harnesses, but only
+the first one runs. Breadth is the engine's premise, and it is also four paid
+calls for a question that needed one — `/unison` turns it back on when the
+question deserves several opinions.
+
 The REPL holds one session id, so every turn appends to the same conversation and
 `-r <id>` picks it up again: never losing track of a conversation is a property of
-resuming, not of a long-lived process. Raw mode is used **only** while editing a
+resuming, not of a long-lived process.
+
+### A resident session
+
+`fleet tui` is a process; the fleet's own orchestrator should not be one you have
+to remember to start. Wrapping it in tmux + a systemd unit makes it resident and
+attachable from anywhere, which is what `scripts/fleet_serve.sh` and
+`fleet-serve.service` do on the hub:
+
+```console
+$ fleet_serve.sh start   --name serve --cwd /opt/fleet
+$ fleet_serve.sh status
+$ fleet_serve.sh attach      # or: ssh -t <host> fleet_serve.sh attach
+```
+
+It shares sessions, memory and the ledger with `fleet run` and the web app, so a
+conversation begun in the browser continues in the terminal and vice versa. Raw mode is used **only** while editing a
 line, so a harness child sees a normal terminal and Ctrl-C keeps its usual meaning
 during a run.
 
@@ -381,6 +422,7 @@ documented below.
 
 | tab | what it is for |
 |---|---|
+| **chat** | the conversational door: a message goes to the engine, progress and the answer appear as they happen, and the next message continues the same session |
 | **run** | give it a task, pick planner/unison/serial, and see each harness's answer with the model it was served |
 | **harnesses** | the live list with availability; install by pasting a descriptor, remove with a button — no restart on either side |
 | **sessions** | conversations and their full transcripts |
@@ -391,7 +433,7 @@ documented below.
 GET    /health
 GET    /v1/harnesses              POST /v1/harnesses      DELETE /v1/harnesses/{name}
 GET    /v1/harnesses/{name}/probe
-POST   /v1/run
+POST   /v1/run                    GET  /v1/runs/{id}?since=N
 GET    /v1/sessions               GET  /v1/sessions/{id}
 GET    /v1/memory                 PUT  /v1/memory
 GET    /v1/memory/history/{scope}/{key}
@@ -404,6 +446,20 @@ Every mutating route answers only after the write is durable, so a caller that
 gets 200 can read the value back immediately. Adding a harness over HTTP is a
 `POST` of the TOML; deleting one is a `DELETE` — the same seamlessness as the
 CLI, because it is the same registry.
+
+### A run from a browser: `async`, then poll
+
+`POST /v1/run` blocks until the answer exists, which is right for a script and
+wrong for a page. `?async=1` (or `{"async": true}`) answers in milliseconds with
+a run id; the run continues on a worker thread and `GET /v1/runs/{id}?since=N`
+returns the lines produced past cursor `N`, then the whole result once
+`state` is `done`.
+
+This is a poll, not a stream, and the reason is the server: `tiny_http` wraps the
+socket in a 1 KiB `BufWriter` and flushes only after the body copy completes, so
+an SSE event written a byte at a time sits in the buffer until the run ends
+(measured 2026-11-01 — a streamed run produced zero bytes for its whole 90s). An
+id also survives a page reload, which a browser stream does not.
 
 ## Everything is a file
 

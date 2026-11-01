@@ -25,6 +25,8 @@ struct Repl {
     harness: String,
     model: Option<String>,
     provider: Option<String>,
+    /// Exactly one harness, chosen by the planner's ranking.
+    single: bool,
     unison: bool,
     serial: bool,
     verbose: bool,
@@ -49,6 +51,11 @@ impl Repl {
             harness: a.harness.clone(),
             model: a.model.clone(),
             provider: a.provider.clone(),
+            // ON by default: `auto` fans out to four harnesses whenever their
+            // scores tie (measured 2026-11-01), which is the right answer for a
+            // research question and 4x the cost for a chat turn. /unison and
+            // /serial turn breadth back on when the question deserves it.
+            single: true,
             unison: false,
             serial: false,
             verbose: false,
@@ -78,6 +85,7 @@ impl Repl {
     fn options(&self) -> fleet::engine::RunOptions {
         fleet::engine::RunOptions {
             harness: Some(self.harness.clone()),
+            single: self.single,
             unison: self.unison,
             serial: self.serial,
             resume: self.session.clone(),
@@ -100,6 +108,9 @@ impl Repl {
             worktree: false,
             subagent_harnesses: Vec::new(),
             continue_session: false,
+            // The REPL renders the answer when it arrives; a channel would have
+            // to be drained by the same thread that is blocked on the run.
+            progress: None,
         }
     }
 }
@@ -388,6 +399,7 @@ fn command(r: &mut Repl, line: &str) -> bool {
   /harness <name|auto>   pin one harness, or let the planner choose
   /model <id>            call a model directly, with no agent CLI in between
   /provider <name>       which provider serves /model
+  /single [on|off]       exactly one harness: the planner's top choice (default on)
   /unison [on|off]       every plausible harness answers; answers are merged
   /serial [on|off]       pipeline: each harness sees the previous answer
   /verbose [on|off]      stream harness output as it arrives
@@ -446,15 +458,26 @@ fn command(r: &mut Repl, line: &str) -> bool {
             println!("  provider = {}", r.provider.as_deref().unwrap_or("auto"));
             true
         }
+        "/single" => {
+            r.single = yes(arg);
+            if r.single {
+                r.unison = false;
+                r.serial = false;
+            }
+            println!("  single = {}", r.single);
+            true
+        }
         "/unison" => {
             r.unison = yes(arg);
             r.serial = false;
+            r.single = false;
             println!("  unison = {}", r.unison);
             true
         }
         "/serial" => {
             r.serial = yes(arg);
             r.unison = false;
+            r.single = false;
             println!("  serial = {}", r.serial);
             true
         }

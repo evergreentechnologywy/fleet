@@ -187,6 +187,16 @@ pub struct Defaults {
     pub provider_base: Option<String>,
     #[serde(default)]
     pub provider_key_env: Option<String>,
+    /// Standing instructions prepended to every run's brief.
+    ///
+    /// The fleet has rules that apply to EVERY task — holographic memory first,
+    /// proxy scopes, the browser lane, the guardrails — and each harness CLI
+    /// carries only its own. Without this, a task answered by codex silently
+    /// skipped them while the same task answered by omp honoured them: the
+    /// engine's answer depended on which harness won a tie. A path is read as a
+    /// file, so the single source of truth stays the fleet's own document.
+    #[serde(default)]
+    pub brief: Option<String>,
 }
 
 /// Engine configuration, loaded from `$FLEET_HOME/fleet.toml`.

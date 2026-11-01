@@ -60,6 +60,10 @@ pub fn run(a: RunArgs, json: bool) -> Result<()> {
         subagents: a.subagents,
         worktree: a.worktree,
         subagent_harnesses: a.subagent_harnesses.clone(),
+        // The CLI already prints progress when `--verbose`, straight from the
+        // sink; nothing is listening on a channel here.
+        progress: None,
+        single: a.single,
     };
     let res = fleet::engine::run(&task, &opts)?;
 

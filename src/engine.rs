@@ -37,6 +37,30 @@ pub fn depth_from_env() -> usize {
         .and_then(|v| v.trim().parse::<usize>().ok())
         .unwrap_or(0)
 }
+/// Where a run reports what it is doing, while it is doing it.
+///
+/// A CLI harness prints progress on stdout that the engine already reads line by
+/// line (`runner::run_streaming`), but it was only forwarded to a terminal when
+/// `--verbose` was set. A hosted app has no terminal, so a 60-second run looked
+/// like a hung request. This is the ONE sink every harness line and every phase
+/// change goes through: the web door streams it and the CLI prints it, instead of
+/// two code paths that drift.
+///
+/// `Arc` rather than a borrow because a fan-out hands it to worker threads.
+#[derive(Clone)]
+pub struct Progress(pub std::sync::Arc<dyn Fn(&str) + Send + Sync>);
+
+impl std::fmt::Debug for Progress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Progress")
+    }
+}
+
+impl Progress {
+    pub fn emit(&self, line: impl AsRef<str>) {
+        (self.0)(line.as_ref())
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct RunOptions {
@@ -94,6 +118,17 @@ pub struct RunOptions {
     pub subagents: usize,
     /// Restrict a fan-out to these harnesses. Empty means any enabled one.
     pub subagent_harnesses: Vec<String>,
+    /// Stream progress lines to this sink, if anyone is listening.
+    pub progress: Option<Progress>,
+    /// Force exactly ONE harness, chosen by the planner's own scoring.
+    ///
+    /// `auto` leaves the count to the planner, which fans out to several
+    /// harnesses when their scores tie — deliberate, because breadth is the
+    /// premise of the engine. It is also four paid calls per turn, which is the
+    /// wrong default for a conversational door or a background queue. This pins
+    /// the best-scoring harness without pinning WHICH one, so a chat stays
+    /// cheap and still routes by task.
+    pub single: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +296,8 @@ struct RunCtx<'a> {
     cwd: &'a std::path::Path,
     /// Give each job its own worktree off HEAD (`--worktree`).
     worktree: bool,
+    /// Where this run streams its progress, when anyone is listening.
+    progress: Option<&'a Progress>,
 }
 
 /// Run a job, and if it FAILS, try the configured alternates in order.
@@ -509,6 +546,7 @@ fn run_jobs(
             let enabled = ctx.enabled.to_vec();
             let cwd = ctx.cwd.to_path_buf();
             let worktree = ctx.worktree;
+            let progress = ctx.progress.cloned();
             handles.push(std::thread::spawn(move || {
                 let ctx = RunCtx {
                     session: &session,
@@ -519,6 +557,7 @@ fn run_jobs(
                     enabled: &enabled,
                     cwd: &cwd,
                     worktree,
+                    progress: progress.as_ref(),
                 };
                 let o = run_job_with_fallback(&j, &router, &ctx);
                 out.lock().push(o);
@@ -552,8 +591,19 @@ fn run_job(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
         enabled: _,
         cwd,
         worktree: _,
+        progress,
     } = *ctx;
     let d: Decision = router.decide(&job.harness, &job.prompt);
+    // A hosted caller has no terminal, so the phase is announced rather than
+    // inferred: which harness, which model, which effort, and why.
+    if let Some(p) = progress {
+        p.emit(format!(
+            "→ {} answered by {} at effort {}",
+            job.harness.name,
+            if d.model.is_empty() { "?" } else { &d.model },
+            if d.effort.is_empty() { "?" } else { &d.effort }
+        ));
+    }
     // Two different directories, and conflating them was the bug:
     //   `work`  = this run's artifact dir (logs, dumps) — per run, per harness
     //   `cwd`   = where the HARNESS actually runs — the caller's directory
@@ -706,8 +756,14 @@ fn run_job(job: &Job, router: &Router, ctx: &RunCtx) -> Outcome {
     }
     let started = std::time::Instant::now();
     let mut lines = 0usize;
+    // One sink, two audiences. Every line a CLI harness prints goes to the
+    // terminal when verbose, and to the progress channel whenever anyone is
+    // listening — a web door must not have to guess that a run is alive.
     let mut sink = |line: &str| {
         lines += 1;
+        if let Some(p) = progress {
+            p.emit(format!("{} {}", job.harness.name, crate::runner::truncate(line, 400)));
+        }
         if verbose {
             if lines <= 40 {
                 println!("[{}] {}", job.harness.name, line);
@@ -1114,6 +1170,26 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
     // behaviour, and so a caller that also passed `--resume` still wins by
     // naming a session explicitly.
     let mut opts = opts.clone();
+
+    // Standing instructions, from config when the caller gave none.
+    //
+    // Resolved HERE rather than in the CLI so every door gets them: `fleet run`,
+    // the TUI, the HTTP app, the chat shim and the queue all reach the engine
+    // through this one call. A rule that only applies to one door is a rule the
+    // fleet breaks by using a different door.
+    if opts.brief_prefix.is_none() {
+        if let Some(b) = router.config.defaults.brief.as_ref().filter(|b| !b.trim().is_empty()) {
+            let text = if std::path::Path::new(b).is_file() {
+                std::fs::read_to_string(b).unwrap_or_default()
+            } else {
+                b.clone()
+            };
+            if !text.trim().is_empty() {
+                opts.brief_prefix = Some(text);
+            }
+        }
+    }
+
     // The harness the caller NAMED, before any substitution. Recorded so the
     // result can say "you asked for X, Y answered" rather than silently
     // reporting success for a harness that never ran.
@@ -1408,6 +1484,13 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
         )
     };
 
+    // `single` narrows a fan-out to the one harness the planner ranked first.
+    // Applied after planning, so the ranking is still the planner's.
+    if opts.single && plan.steps.len() > 1 {
+        plan.steps.truncate(1);
+        plan.mode = crate::planner::Mode::Single;
+    }
+
     // Resolve steps to harnesses. A step naming a harness that is not installed
     // is dropped here rather than failing the run.
     plan.steps
@@ -1557,6 +1640,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                 enabled: &enabled,
                 cwd: &work_cwd,
                 worktree: opts.worktree,
+                progress: opts.progress.as_ref(),
             };
             let order: Vec<String> = plan.steps.iter().map(|s| s.harness.clone()).collect();
             calls = run_jobs(jobs, &router, &ctx, parallel, &order);
@@ -1572,6 +1656,7 @@ pub fn run(task: &str, opts: &RunOptions) -> Result<RunResult> {
                 enabled: &enabled,
                 cwd: &work_cwd,
                 worktree: opts.worktree,
+                progress: opts.progress.as_ref(),
             };
             for step in &plan.steps {
                 let h = enabled

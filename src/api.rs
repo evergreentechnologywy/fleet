@@ -44,13 +44,28 @@ fn cors() -> Vec<Header> {
     ]
 }
 
-fn json_response(code: u16, body: serde_json::Value) -> Response<std::io::Cursor<Vec<u8>>> {
+/// Every route answers through this one reader type, so a streaming route and a
+/// buffered one can be returned by the same `match`. A `Cursor` is boxed, not a
+/// special case: the handler does not care which it got.
+type Body = Box<dyn std::io::Read + Send>;
+
+fn boxed(code: u16, ctype: &str, bytes: Vec<u8>) -> Response<Body> {
+    let len = bytes.len();
+    let mut headers = cors();
+    headers.retain(|h| !h.field.as_str().as_str().eq_ignore_ascii_case("content-type"));
+    headers.push(Header::from_bytes(&b"Content-Type"[..], ctype.as_bytes()).unwrap());
+    Response::new(
+        tiny_http::StatusCode(code),
+        headers,
+        Box::new(std::io::Cursor::new(bytes)) as Body,
+        Some(len),
+        None,
+    )
+}
+
+fn json_response(code: u16, body: serde_json::Value) -> Response<Body> {
     let text = serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".into());
-    let mut r = Response::from_string(text).with_status_code(code);
-    for h in cors() {
-        r = r.with_header(h);
-    }
-    r
+    boxed(code, "application/json", text.into_bytes())
 }
 
 /// Serve the API on `host:port` until the process is stopped.
@@ -133,19 +148,12 @@ fn serve_one(host: &str, port: u16, registry: &Registry) -> Result<()> {
             continue;
         }
         let q = Query::parse(&query);
-        let result: Result<Response<std::io::Cursor<Vec<u8>>>> = (|| {
+        let result: Result<Response<Body>> = (|| {
             // The embedded app, before anything else: it is a GET on a path
             // that no API route claims, so there is nothing to disambiguate.
             if method == Method::Get {
                 if let Some((ctype, body)) = crate::webapp::route(&path) {
-                    let mut r = Response::from_string(body).with_status_code(200);
-                    for h in cors() {
-                        r = r.with_header(h);
-                    }
-                    r = r.with_header(
-                        Header::from_bytes(&b"Content-Type"[..], ctype.as_bytes()).unwrap(),
-                    );
-                    return Ok(r);
+                    return Ok(boxed(200, ctype, body.as_bytes().to_vec()));
                 }
             }
             match (&method, path.as_str()) {
@@ -346,9 +354,51 @@ fn serve_one(host: &str, port: u16, registry: &Registry) -> Result<()> {
                                     .collect()
                             })
                             .unwrap_or_default(),
+                        progress: None,
+                        single: v.get("single").and_then(|b| b.as_bool()).unwrap_or(false),
                     };
+                    // A browser cannot wait 60 seconds on a silent request: it
+                    // cannot tell a slow run from a hung one. `async` answers with
+                    // an id at once and the app polls `/v1/runs/{id}` for output
+                    // and the final result. Scripts keep the blocking form.
+                    let wants_async = q.get("async").as_deref() == Some("1")
+                        || v.get("async").and_then(|b| b.as_bool()).unwrap_or(false);
+                    if wants_async {
+                        let id = spawn_job(task, opts);
+                        return Ok(json_response(200, json!({"run": id, "state": "running"})));
+                    }
                     let res = task_blocking(task, opts)?;
                     Ok(json_response(200, res))
+                }
+                // Poll one async run: output since the caller's cursor, plus
+                // the result once it exists.
+                (Method::Get, p) if p.starts_with("/v1/runs/") => {
+                    let id = &p["/v1/runs/".len()..];
+                    let since = q.get_i64("since", 0).max(0) as usize;
+                    let j = jobs().lock();
+                    match j.get(id) {
+                        Some(job) => {
+                            let from = since.min(job.lines.len());
+                            Ok(json_response(
+                                200,
+                                json!({
+                                    "run": id,
+                                    "state": if job.done { "done" } else { "running" },
+                                    "task": job.task,
+                                    "session": job.session,
+                                    "started": job.started,
+                                    "cursor": job.lines.len(),
+                                    "lines": job.lines[from..].to_vec(),
+                                    "error": job.error,
+                                    "result": job.result,
+                                }),
+                            ))
+                        }
+                        None => Ok(json_response(
+                            404,
+                            json!({"error": "no such run", "run": id}),
+                        )),
+                    }
                 }
                 (Method::Get, "/v1/sessions") => {
                     let mem = Memory::open_default()?;
@@ -725,6 +775,103 @@ fn bearer(headers: &[(String, String)]) -> Option<String> {
                 .find(|(k, _)| k == "x-fleet-token")
                 .map(|(_, v)| v.trim().to_string())
         })
+}
+
+/// The body of a browser-visible run, while it is still running.
+///
+/// A hosted app has to show work as it happens, and `tiny_http` cannot stream:
+/// it wraps the socket in a 1 KiB `BufWriter` and flushes only after the body
+/// copy completes, so an SSE event written a byte at a time sits in the buffer
+/// until the run ends (measured 2026-11-01 — a streamed run produced zero bytes
+/// for its whole 90s). The honest answer on this server is not a fake stream: it
+/// is a JOB. `POST /v1/run` answers with an id at once, the run continues on a
+/// worker thread, and the app polls a delta. That also survives a page reload,
+/// which a browser stream does not.
+#[derive(Default)]
+struct Job {
+    lines: Vec<String>,
+    done: bool,
+    result: Option<serde_json::Value>,
+    error: Option<String>,
+    started: String,
+    session: String,
+    task: String,
+}
+
+/// Lines kept per job. A chat shows a tail, not a log file; unbounded growth is
+/// how a long run becomes a memory leak with a user-facing name.
+const JOB_LINE_CAP: usize = 400;
+/// Finished jobs kept for a late poll. Enough for a reload, small enough that
+/// the map cannot grow without bound on a busy host.
+const JOB_KEEP: usize = 40;
+
+fn jobs() -> &'static parking_lot::Mutex<std::collections::HashMap<String, Job>> {
+    static JOBS: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<String, Job>>> =
+        std::sync::OnceLock::new();
+    JOBS.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Start a run on a worker thread and return its id immediately.
+fn spawn_job(task: String, mut opts: RunOptions) -> String {
+    let id = format!("r-{}", crate::short_id());
+    let session = opts.session.clone().or(opts.resume.clone()).unwrap_or_default();
+    {
+        let mut j = jobs().lock();
+        // Drop the oldest finished entries before adding one, so a host that has
+        // been up for weeks does not accumulate every run it ever did.
+        if j.len() > JOB_KEEP {
+            let mut finished: Vec<(String, String)> = j
+                .iter()
+                .filter(|(_, v)| v.done)
+                .map(|(k, v)| (k.clone(), v.started.clone()))
+                .collect();
+            finished.sort_by(|a, b| a.1.cmp(&b.1));
+            for (k, _) in finished.into_iter().take(j.len().saturating_sub(JOB_KEEP)) {
+                j.remove(&k);
+            }
+        }
+        j.insert(
+            id.clone(),
+            Job {
+                started: crate::now(),
+                session,
+                task: task.clone(),
+                ..Default::default()
+            },
+        );
+    }
+
+    let sink_id = id.clone();
+    let job_id = id.clone();
+    opts.progress = Some(crate::engine::Progress(std::sync::Arc::new(move |line: &str| {
+        let mut j = jobs().lock();
+        if let Some(job) = j.get_mut(&sink_id) {
+            if job.lines.len() < JOB_LINE_CAP {
+                job.lines.push(line.to_string());
+            } else if job.lines.len() == JOB_LINE_CAP {
+                job.lines.push("… (further output suppressed)".into());
+            }
+        }
+    })));
+
+    std::thread::spawn(move || {
+        let out = crate::engine::run(&task, &opts);
+        let mut j = jobs().lock();
+        if let Some(job) = j.get_mut(&job_id) {
+            match out {
+                Ok(res) => {
+                    job.session = res.session.clone();
+                    if !res.answer.trim().is_empty() {
+                        job.lines.push(res.answer.clone());
+                    }
+                    job.result = serde_json::to_value(res).ok();
+                }
+                Err(e) => job.error = Some(e.to_string()),
+            }
+            job.done = true;
+        }
+    });
+    id
 }
 
 /// Runs are blocking; the caller streams nothing back until the answer is whole.

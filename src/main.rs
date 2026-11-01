@@ -189,6 +189,13 @@ struct RunArgs {
     #[arg(long)]
     serial: bool,
 
+    /// Exactly one harness: the planner's top-ranked one. Cheap and still routed.
+    ///
+    /// `auto` fans out when harness scores tie, which is right for a research
+    /// question and wrong for a chat turn or a queued job.
+    #[arg(long)]
+    single: bool,
+
     /// Resume a session by id, or `last` for the most recent one.
     #[arg(long, short = 'r')]
     resume: Option<String>,
